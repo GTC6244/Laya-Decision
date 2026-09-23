@@ -1,0 +1,17 @@
+[package]
+name = "laya-serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Jev-compatible HTTP server for the Laya-Decision engine"
+
+[dependencies]
+laya = { path = "../laya" }
+serde.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

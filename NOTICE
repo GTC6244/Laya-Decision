@@ -1,0 +1,16 @@
+Laya-Decision (Rust port)
+Copyright 2026 the Laya-Decision authors
+
+This product is a Rust port of Laya (https://github.com/NandhaKishorM/laya),
+a non-autoregressive System-1 decision engine, which is licensed under the
+Apache License, Version 2.0. See reference/UPSTREAM-LICENSE for the upstream
+license text.
+
+Portions of the logic (language detection, routing, email cleaning, question
+presets, sequence construction, and calibration) are ported from the upstream
+Python package and its official TypeScript port (`laya-ts`). Model inference is
+reimplemented natively on candle (https://github.com/huggingface/candle).
+
+The Laya model checkpoints (convaiinnovations/laya and siblings) are distributed
+separately on the Hugging Face Hub under their own license and are not included
+in this repository.

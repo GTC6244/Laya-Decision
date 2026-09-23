@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+.DS_Store
+# Python env for the parity harness (scripts/dump_e2e.py)
+/.venv-torch/
+# Downloaded checkpoints / large artifacts used by e2e parity tests
+/crates/laya/tests/checkpoints/

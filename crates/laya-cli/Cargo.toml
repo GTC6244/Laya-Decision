@@ -1,0 +1,17 @@
+[package]
+name = "laya-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for the Laya-Decision engine"
+
+[[bin]]
+name = "laya"
+path = "src/main.rs"
+
+[dependencies]
+laya = { path = "../laya" }
+serde_json.workspace = true
+clap.workspace = true

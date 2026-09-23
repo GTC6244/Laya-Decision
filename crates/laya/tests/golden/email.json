@@ -1,0 +1,42 @@
+[
+  {
+    "input": "Hi team,\n\nI was charged twice this month. Please refund.\n\nThanks,\nJane\n\nOn Mon, Jan 1, 2024 at 10:00 AM John <john@x.com> wrote:\n> Original message here\n> more quoted text",
+    "output": "Hi team,\n\nI was charged twice this month. Please refund."
+  },
+  {
+    "input": "Please cancel my order.\n\nBest regards,\nMaria Silva\nAcme Corp\n555-1234",
+    "output": "Please cancel my order."
+  },
+  {
+    "input": "Preciso de ajuda com o meu pedido.\n\nAtenciosamente,\nJoao",
+    "output": "Preciso de ajuda com o meu pedido."
+  },
+  {
+    "input": "I need help.\n\nSent from my iPhone",
+    "output": "I need help."
+  },
+  {
+    "input": "This is confidential information intended solely for the addressee. If you received this email in error, please delete it.",
+    "output": "This is confidential information intended solely for the addressee."
+  },
+  {
+    "input": "Is this confidential? I need to know before sending.",
+    "output": "Is this confidential? I need to know before sending."
+  },
+  {
+    "input": "Refund please.\n\nThanks for the quick reply.",
+    "output": "Refund please.\n\nThanks for the quick reply."
+  },
+  {
+    "input": "Ola, quero cancelar.\n\nEm 10/09/2024, Fulano <fulano@x.com> escreveu:\n> mensagem antiga",
+    "output": "Ola, quero cancelar."
+  },
+  {
+    "input": "Report the bug.\n\n-----Original Message-----\nFrom: someone\nSent: yesterday",
+    "output": "Report the bug."
+  },
+  {
+    "input": "Body line one.\nBody line two.\n\n--\nSignature Block\nCompany Name",
+    "output": "Body line one.\nBody line two."
+  }
+]

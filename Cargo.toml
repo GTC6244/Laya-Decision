@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = ["crates/laya", "crates/laya-serve", "crates/laya-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+repository = "https://github.com/NandhaKishorM/laya"
+description = "Pure-Rust port of the Laya non-autoregressive System-1 decision engine"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+regex = "1"
+thiserror = "2"
+unicode-general-category = "1"
+
+# inference backend (feature-gated)
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+tokenizers = "0.21"
+hf-hub = "0.4"
+
+# server
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# cli
+clap = { version = "4", features = ["derive"] }

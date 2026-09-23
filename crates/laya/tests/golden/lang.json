@@ -1,0 +1,272 @@
+[
+  {
+    "input": "I was charged twice, please refund",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "The quick brown fox jumps over the lazy dog.",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Mein Konto wurde zweimal belastet",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Je voudrais annuler mon abonnement, merci beaucoup",
+    "script": "latin",
+    "language": "fr",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Quiero cancelar mi suscripcion y necesito ayuda",
+    "script": "latin",
+    "language": "es",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Voce pode me mandar a nota fiscal?",
+    "script": "latin",
+    "language": "pt",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Ho bisogno di aiuto con la mia fattura, grazie",
+    "script": "latin",
+    "language": "it",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Ik wil mijn account opzeggen alstublieft",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Vreau sa anulez abonamentul meu foarte repede",
+    "script": "latin",
+    "language": "ro",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Ami tomake ekta message pathacchi, kintu somossa hocche",
+    "script": "latin",
+    "language": "bn",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "私は二重に請求されました",
+    "script": "kana",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "मुझे दो बार शुल्क लिया गया",
+    "script": "devanagari",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "저는 두 번 청구되었습니다",
+    "script": "hangul",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "Меня дважды списали деньги",
+    "script": "cyrillic",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "لقد تم خصم المبلغ مرتين",
+    "script": "arabic",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "ฉันถูกเรียกเก็บเงินสองครั้ง",
+    "script": "thai",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "Δύο φορές χρεώθηκα",
+    "script": "greek",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "நான் இருமுறை கட்டணம் வசூலிக்கப்பட்டேன்",
+    "script": "tamil",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "https://github.com/foo/bar and user@acme.com",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "v1.2.3 U.S.A. e.g. i.e.",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Set alpha to 0.05 and beta to 0.1",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "OK",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "",
+    "script": "unknown",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Dmitri Petrovich Savitsky wrote the report",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Bonjour, je m'appelle Jean et j'habite a Paris",
+    "script": "latin",
+    "language": "fr",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Necesito ayuda con mi factura por favor",
+    "script": "latin",
+    "language": "es",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Deu erro 500 no endpoint de login depois do update",
+    "script": "latin",
+    "language": "pt",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0
+  },
+  {
+    "input": "Обвинение предъявлено вчера в суде Москвы",
+    "script": "cyrillic",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 1.0
+  },
+  {
+    "input": "混合 text with English brand names like Apple",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0556
+  },
+  {
+    "input": "Türkçe metin çok güzel ve ilginç bir dil",
+    "script": "latin",
+    "language": "az",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.125,
+    "non_latin_fraction": 0.0
+  }
+]

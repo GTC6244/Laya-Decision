@@ -1,0 +1,61 @@
+[
+  {
+    "input": "I was charged twice",
+    "model": "english",
+    "reason": "English Latin text"
+  },
+  {
+    "input": "Mein Konto wurde zweimal belastet",
+    "model": "english",
+    "reason": "Latin script, language not identified and no non-English letters; using default (english)"
+  },
+  {
+    "input": {
+      "message": "Quiero cancelar mi suscripcion"
+    },
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'es', not English"
+  },
+  {
+    "input": {
+      "message": "私は二重に請求されました"
+    },
+    "model": "multilingual",
+    "reason": "non-Latin script (kana, 100% of letters); the English checkpoint cannot read it"
+  },
+  {
+    "input": "OK",
+    "model": "english",
+    "reason": "Latin script, language not identified and no non-English letters; using default (english)"
+  },
+  {
+    "input": "",
+    "model": "english",
+    "reason": "no letters detected in state; using default (english)"
+  },
+  {
+    "input": {
+      "subject": "Hello",
+      "body": "Vreau sa anulez"
+    },
+    "model": "english",
+    "reason": "Latin script, language not identified and no non-English letters; using default (english)"
+  },
+  {
+    "input": "Меня дважды списали деньги",
+    "model": "multilingual",
+    "reason": "non-Latin script (cyrillic, 100% of letters); the English checkpoint cannot read it"
+  },
+  {
+    "input": "The quick brown fox jumps over the lazy dog",
+    "model": "english",
+    "reason": "English Latin text"
+  },
+  {
+    "input": {
+      "ticket": "Deu erro 500 no endpoint depois do update"
+    },
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'pt', not English"
+  }
+]
