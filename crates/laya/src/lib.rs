@@ -48,7 +48,7 @@ pub use lang::{analyse, detect_script, is_english};
 pub use presets::{
     email_questions, guard_questions, moderation_questions, router_questions, triage_questions,
 };
-pub use router::{RouteDecision, Router};
+pub use router::{RouteDecision, RouteHints, Router, RouterOptions};
 
 #[cfg(feature = "model")]
 pub use agent::{Agent, SystemOneResult};

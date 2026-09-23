@@ -1,11 +1,18 @@
 [package]
-name = "laya"
+name = "laya-decision"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Pure-Rust port of the Laya non-autoregressive System-1 decision engine (Laya-Decision)"
+readme = "README.md"
+keywords = ["nlp", "classification", "inference", "candle", "transformer"]
+categories = ["science", "text-processing"]
+
+# `laya` is taken on crates.io, so the package is `laya-decision` but the import name stays `laya`.
+[lib]
+name = "laya"
 
 [dependencies]
 serde.workspace = true

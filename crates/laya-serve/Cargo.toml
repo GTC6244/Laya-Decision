@@ -1,14 +1,20 @@
 [package]
-name = "laya-serve"
+name = "laya-decision-serve"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Jev-compatible HTTP server for the Laya-Decision engine"
+description = "Jev-compatible HTTP server for the Laya-Decision engine (installs the `laya-serve` binary)"
+keywords = ["nlp", "classification", "server", "candle"]
+categories = ["web-programming::http-server", "text-processing"]
+
+[[bin]]
+name = "laya-serve"
+path = "src/main.rs"
 
 [dependencies]
-laya = { path = "../laya" }
+laya = { package = "laya-decision", path = "../laya", version = "0.1" }
 serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true

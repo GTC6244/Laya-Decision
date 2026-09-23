@@ -1,17 +1,19 @@
 [package]
-name = "laya-cli"
+name = "laya-decision-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-line interface for the Laya-Decision engine"
+description = "Command-line interface for the Laya-Decision engine (installs the `laya` binary)"
+keywords = ["nlp", "classification", "cli", "candle"]
+categories = ["command-line-utilities", "text-processing"]
 
 [[bin]]
 name = "laya"
 path = "src/main.rs"
 
 [dependencies]
-laya = { path = "../laya" }
+laya = { package = "laya-decision", path = "../laya", version = "0.1" }
 serde_json.workspace = true
 clap.workspace = true

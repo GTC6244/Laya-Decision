@@ -26,11 +26,20 @@ dependency-free.
 
 ## Workspace layout
 
-| crate | what |
-|-------|------|
-| [`laya`](crates/laya) | the embeddable library — `Agent`, `Router`, language detection, email cleaning, presets, shortlist |
-| [`laya-serve`](crates/laya-serve) | a Jev-compatible HTTP server (`POST /v1/systemone`, `GET /health`) |
-| [`laya-cli`](crates/laya-cli) | the `laya` command — route or answer a request from the terminal |
+| crate (crates.io) | dir | what |
+|---|---|---|
+| [`laya-decision`](https://crates.io/crates/laya-decision) | [`crates/laya`](crates/laya) | the embeddable library (imported as `laya`) — `Agent`, `Router`, language detection, email cleaning, presets, shortlist |
+| [`laya-decision-serve`](https://crates.io/crates/laya-decision-serve) | [`crates/laya-serve`](crates/laya-serve) | Jev-compatible HTTP server (`POST /v1/systemone`, `GET /health`); installs the `laya-serve` binary |
+| [`laya-decision-cli`](https://crates.io/crates/laya-decision-cli) | [`crates/laya-cli`](crates/laya-cli) | the `laya` command — route or answer a request from the terminal |
+
+```bash
+cargo add laya-decision                  # library (use laya::…)
+cargo install laya-decision-cli          # the `laya` CLI
+cargo install laya-decision-serve        # the `laya-serve` HTTP server
+```
+
+> The name `laya` was already taken on crates.io, so the crates are published under the
+> `laya-decision*` namespace; the library is still imported as `laya`.
 
 The `laya` crate's pure-logic modules build **without** the default `model` feature; enabling it
 (on by default) pulls in candle, the Hugging Face tokenizer, and Hub download.

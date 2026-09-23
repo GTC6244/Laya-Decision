@@ -1580,7 +1580,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "laya"
+name = "laya-decision"
 version = "0.1.0"
 dependencies = [
  "candle-core",
@@ -1597,20 +1597,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "laya-cli"
+name = "laya-decision-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "laya",
+ "laya-decision",
  "serde_json",
 ]
 
 [[package]]
-name = "laya-serve"
+name = "laya-decision-serve"
 version = "0.1.0"
 dependencies = [
  "axum",
- "laya",
+ "laya-decision",
  "serde",
  "serde_json",
  "tokio",

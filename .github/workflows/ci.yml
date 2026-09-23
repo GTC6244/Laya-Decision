@@ -42,4 +42,4 @@ jobs:
       # Fast suite: pure-logic unit tests + golden parity against upstream Python.
       # No model weights or network needed (the `model` feature is off).
       - name: Tests (pure logic + parity)
-        run: cargo test -p laya --no-default-features
+        run: cargo test -p laya-decision --no-default-features
