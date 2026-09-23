@@ -20,7 +20,10 @@ fn checkpoint_repo(stem: &str) -> (&'static str, Option<String>) {
     match stem {
         "english" => ("convaiinnovations/laya", None),
         "multilingual" => ("convaiinnovations/laya", Some("multilingual".to_string())),
-        "typed-decisions" => ("convaiinnovations/laya", Some("typed-decisions".to_string())),
+        "typed-decisions" => (
+            "convaiinnovations/laya",
+            Some("typed-decisions".to_string()),
+        ),
         _ => panic!("unknown checkpoint stem {stem}"),
     }
 }
@@ -34,26 +37,43 @@ fn as_questions(v: &Value) -> Questions {
 }
 
 fn check_checkpoint(stem: &str, max_diff: &mut f64, mismatches: &mut Vec<String>) -> bool {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "golden_e2e", &format!("{stem}.json")]
-        .iter()
-        .collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "golden_e2e",
+        &format!("{stem}.json"),
+    ]
+    .iter()
+    .collect();
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => {
-            eprintln!("skip {stem}: no reference at {} (run scripts/dump_e2e.py)", path.display());
+            eprintln!(
+                "skip {stem}: no reference at {} (run scripts/dump_e2e.py)",
+                path.display()
+            );
             return false;
         }
     };
     let rows: Vec<Value> = serde_json::from_slice(&bytes).expect("valid e2e json");
     let (repo, subfolder) = checkpoint_repo(stem);
-    let agent = Agent::load(repo, LoadOptions { subfolder, ..Default::default() })
-        .expect("load checkpoint");
+    let agent = Agent::load(
+        repo,
+        LoadOptions {
+            subfolder,
+            ..Default::default()
+        },
+    )
+    .expect("load checkpoint");
 
     for row in &rows {
         let state = row["state"].clone();
         let questions = as_questions(&row["questions"]);
         let want = &row["result"]["answers"];
-        let got = agent.system_one(&state, &questions).expect("system_one").to_json();
+        let got = agent
+            .system_one(&state, &questions)
+            .expect("system_one")
+            .to_json();
         let got = &got["answers"];
 
         for (qid, wa) in want.as_object().unwrap() {
@@ -74,7 +94,13 @@ fn check_checkpoint(stem: &str, max_diff: &mut f64, mismatches: &mut Vec<String>
     true
 }
 
-fn compare_numbers(want: &Value, got: &Value, ctx: &str, max_diff: &mut f64, mismatches: &mut Vec<String>) {
+fn compare_numbers(
+    want: &Value,
+    got: &Value,
+    ctx: &str,
+    max_diff: &mut f64,
+    mismatches: &mut Vec<String>,
+) {
     match want {
         Value::Object(m) => {
             for (k, wv) in m {

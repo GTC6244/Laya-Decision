@@ -41,15 +41,20 @@ pub struct SystemOneResult {
 impl SystemOneResult {
     /// Serialise to the Jev wire shape: `{model, answers, usage, routing?}`.
     pub fn to_json(&self) -> Value {
-        let answers: Map<String, Value> =
-            self.answers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let answers: Map<String, Value> = self
+            .answers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let mut out = json!({
             "model": self.model,
             "answers": Value::Object(answers),
             "usage": {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens},
         });
         if let Some(r) = &self.routing {
-            out.as_object_mut().unwrap().insert("routing".to_string(), r.clone());
+            out.as_object_mut()
+                .unwrap()
+                .insert("routing".to_string(), r.clone());
         }
         out
     }
@@ -78,12 +83,13 @@ impl Agent {
         let files = resolve_files(model_id_or_path, &opts)?;
 
         let cfg: Value = serde_json::from_slice(&std::fs::read(&files.config)?)?;
-        let encoder_config: Value =
-            serde_json::from_slice(&std::fs::read(&files.encoder_config)?)?;
+        let encoder_config: Value = serde_json::from_slice(&std::fs::read(&files.encoder_config)?)?;
 
         let max_len = cfg.get("max_len").and_then(|v| v.as_u64()).unwrap_or(512) as usize;
-        let head_max_len =
-            cfg.get("head_max_len").and_then(|v| v.as_u64()).unwrap_or(192) as usize;
+        let head_max_len = cfg
+            .get("head_max_len")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(192) as usize;
         let head_layers = cfg.get("head_layers").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
         let n_act = cfg
             .get("act_costs")
@@ -96,7 +102,8 @@ impl Agent {
         let temperature_by_options = load_temperature_by_options(&cfg);
 
         let device = resolve_device(opts.device.as_deref());
-        let model = DecisionModel::load(&files.weights, &encoder_config, head_layers, n_act, device)?;
+        let model =
+            DecisionModel::load(&files.weights, &encoder_config, head_layers, n_act, device)?;
         let tok = LayaTokenizer::from_file(&files.tokenizer)?;
 
         Ok(Agent {
@@ -170,7 +177,12 @@ impl Agent {
             for items in &per_state_items {
                 let nrows = items.len();
                 let n_tokens: usize = (row..row + nrows)
-                    .map(|r| batch.attention_mask[r].iter().map(|&x| x as usize).sum::<usize>())
+                    .map(|r| {
+                        batch.attention_mask[r]
+                            .iter()
+                            .map(|&x| x as usize)
+                            .sum::<usize>()
+                    })
                     .sum();
                 let answers = self.decode(&logits, &act, items, &internal, row);
                 results.push(SystemOneResult {
@@ -361,9 +373,9 @@ fn load_temperature(cfg: &Value) -> [f64; 3] {
     let arr = cfg.get("temperature").and_then(|v| v.as_array());
     let mut out = [1.0; 3];
     if let Some(a) = arr {
-        for i in 0..3 {
+        for (i, slot) in out.iter_mut().enumerate() {
             if let Some(v) = a.get(i) {
-                out[i] = clamp_temperature(v);
+                *slot = clamp_temperature(v);
             }
         }
     }
@@ -389,7 +401,9 @@ fn resolve_device(device: Option<&str>) -> Device {
                 match Device::new_metal(0) {
                     Ok(d) => d,
                     Err(e) => {
-                        eprintln!("laya: Metal requested but unavailable ({e}); falling back to CPU.");
+                        eprintln!(
+                            "laya: Metal requested but unavailable ({e}); falling back to CPU."
+                        );
                         Device::Cpu
                     }
                 }
@@ -517,7 +531,10 @@ fn to_internal(qdef: &Value) -> Result<InternalQ> {
             if let Value::Array(a) = &crit {
                 let mut m = Map::new();
                 for c in a {
-                    let key = c.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::common::py_json(c));
+                    let key = c
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| crate::common::py_json(c));
                     m.insert(key, Value::Null);
                 }
                 crit = Value::Object(m);
@@ -540,7 +557,12 @@ fn to_internal(qdef: &Value) -> Result<InternalQ> {
         None => String::new(),
     };
     let labels = obj.get("labels").cloned();
-    Ok(InternalQ { t, ins, crit, labels })
+    Ok(InternalQ {
+        t,
+        ins,
+        crit,
+        labels,
+    })
 }
 
 /// Resolve the four checkpoint files from a local dir or a Hugging Face repo id.
@@ -563,7 +585,12 @@ fn resolve_files(model_id_or_path: &str, opts: &LoadOptions) -> Result<Checkpoin
         } else {
             require(dir.join("tokenizer.json"))?
         };
-        return Ok(CheckpointFiles { config, weights, encoder_config, tokenizer });
+        return Ok(CheckpointFiles {
+            config,
+            weights,
+            encoder_config,
+            tokenizer,
+        });
     }
     if model_id_or_path.starts_with('/')
         || model_id_or_path.starts_with("./")
@@ -581,13 +608,19 @@ fn require(p: PathBuf) -> Result<PathBuf> {
     if p.exists() {
         Ok(p)
     } else {
-        Err(LayaError::NotFound(format!("missing checkpoint file: {}", p.display())))
+        Err(LayaError::NotFound(format!(
+            "missing checkpoint file: {}",
+            p.display()
+        )))
     }
 }
 
 fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
     use hf_hub::api::sync::ApiBuilder;
-    let token = opts.token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+    let token = opts
+        .token
+        .clone()
+        .or_else(|| std::env::var("HF_TOKEN").ok());
     let api = ApiBuilder::new()
         .with_token(token)
         .build()
@@ -606,5 +639,10 @@ fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
     let weights = get("model.safetensors")?;
     let encoder_config = get("encoder/config.json")?;
     let tokenizer = get("tokenizer/tokenizer.json").or_else(|_| get("tokenizer.json"))?;
-    Ok(CheckpointFiles { config, weights, encoder_config, tokenizer })
+    Ok(CheckpointFiles {
+        config,
+        weights,
+        encoder_config,
+        tokenizer,
+    })
 }

@@ -40,7 +40,10 @@ struct AppState {
 
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => default,
     }
 }
@@ -114,7 +117,10 @@ async fn systemone(
             .map(|v| v == format!("Bearer {key}"))
             .unwrap_or(false);
         if !ok {
-            return Err(err(StatusCode::UNAUTHORIZED, "invalid or missing bearer token"));
+            return Err(err(
+                StatusCode::UNAUTHORIZED,
+                "invalid or missing bearer token",
+            ));
         }
     }
 
@@ -131,7 +137,12 @@ async fn systemone(
     let questions_val = obj.get("questions").cloned().unwrap_or(Value::Null);
     let questions: laya::Questions = match questions_val {
         Value::Object(m) => m.into_iter().collect(),
-        _ => return Err(err(StatusCode::BAD_REQUEST, "'questions' must be an object")),
+        _ => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "'questions' must be an object",
+            ))
+        }
     };
     let model = resolve_model(obj.get("model").and_then(|v| v.as_str()));
 
@@ -149,7 +160,9 @@ async fn systemone(
             model: model.as_deref(),
             ..Default::default()
         };
-        router.predict(&state, &questions, &hints).map(|r| r.to_json())
+        router
+            .predict(&state, &questions, &hints)
+            .map(|r| r.to_json())
     })
     .await;
 
@@ -173,7 +186,10 @@ async fn main() {
         )
         .init();
 
-    let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "cpu".to_string());
+    let device = std::env::var("LAYA_DEVICE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "cpu".to_string());
     let app_state = AppState {
         router: Arc::new(build_router()),
         gate: Arc::new(Semaphore::new(1)),
@@ -187,8 +203,13 @@ async fn main() {
         .with_state(app_state);
 
     let host = std::env::var("LAYA_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port: u16 = std::env::var("LAYA_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8000);
-    let addr: SocketAddr = format!("{host}:{port}").parse().expect("valid bind address");
+    let port: u16 = std::env::var("LAYA_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8000);
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .expect("valid bind address");
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!("laya-serve listening on http://{addr}");

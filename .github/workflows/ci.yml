@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # reqwest (via hf-hub) uses native-tls → needs OpenSSL headers on Linux.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # Compiles the whole workspace (library, server, CLI, tests, examples) with the candle
+      # backend (CPU) and fails on any lint. The model e2e test is `#[ignore]`d and not run here.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Fast suite: pure-logic unit tests + golden parity against upstream Python.
+      # No model weights or network needed (the `model` feature is off).
+      - name: Tests (pure logic + parity)
+        run: cargo test -p laya --no-default-features

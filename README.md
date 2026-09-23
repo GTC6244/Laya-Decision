@@ -1,5 +1,7 @@
 # Laya-Decision
 
+[![CI](https://github.com/GTC6244/Laya-Decision/actions/workflows/ci.yml/badge.svg)](https://github.com/GTC6244/Laya-Decision/actions/workflows/ci.yml)
+
 A **pure-Rust port** of [Laya](https://github.com/NandhaKishorM/laya) — a multilingual,
 non-autoregressive *System-1 decision engine*. Given a **state** (text, JSON, or a conversation
 list) and a set of **typed questions**, it scores every question in a **single forward pass** —

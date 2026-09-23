@@ -14,6 +14,9 @@ pub const DEFAULT_SHORTLIST_K: usize = 20;
 pub const DEFAULT_EMBED_MAX_LENGTH: usize = 512;
 pub const DEFAULT_EMBED_BATCH_SIZE: usize = 32;
 
+/// Ranking result: `(labels, cosine scores or None, passthrough, total option count)`.
+type Ranked = (Vec<String>, Option<Vec<f64>>, bool, usize);
+
 /// Build an `embed_fn` that mean-pools the checkpoint encoder already loaded on `agent`.
 ///
 /// The returned closure embeds a list of strings for [`shortlist_choice`]/[`predict_shortlist`].
@@ -74,7 +77,10 @@ where
             continue;
         }
         let criteria = qdef.get("criteria").ok_or_else(|| {
-            LayaError::InvalidQuestion(format!("question {:?} is a choice but has no criteria", qid))
+            LayaError::InvalidQuestion(format!(
+                "question {:?} is a choice but has no criteria",
+                qid
+            ))
         })?;
         let instructions = qdef.get("instructions").and_then(|v| v.as_str());
         let (labels, scores, passthrough, n) =
@@ -112,7 +118,7 @@ fn rank<F>(
     embed_fn: F,
     k: usize,
     instructions: Option<&str>,
-) -> Result<(Vec<String>, Option<Vec<f64>>, bool, usize)>
+) -> Result<Ranked>
 where
     F: Fn(&[String]) -> Vec<Vec<f64>>,
 {
@@ -163,7 +169,11 @@ fn criteria_keys(criteria: &Value) -> Result<Vec<String>> {
         Value::Object(m) => m.keys().cloned().collect(),
         Value::Array(a) => a
             .iter()
-            .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::common::py_json(v)))
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| crate::common::py_json(v))
+            })
             .collect(),
         _ => {
             return Err(LayaError::InvalidQuestion(

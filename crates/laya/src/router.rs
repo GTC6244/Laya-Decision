@@ -17,16 +17,28 @@ pub type ModelSpec = (String, Option<String>);
 fn default_models() -> Vec<(&'static str, ModelSpec)> {
     vec![
         ("english", (BUNDLE_REPO.to_string(), None)),
-        ("multilingual", (BUNDLE_REPO.to_string(), Some("multilingual".to_string()))),
-        ("typed-decisions", (BUNDLE_REPO.to_string(), Some("typed-decisions".to_string()))),
+        (
+            "multilingual",
+            (BUNDLE_REPO.to_string(), Some("multilingual".to_string())),
+        ),
+        (
+            "typed-decisions",
+            (BUNDLE_REPO.to_string(), Some("typed-decisions".to_string())),
+        ),
     ]
 }
 
 fn standalone_models() -> Vec<(&'static str, ModelSpec)> {
     vec![
         ("english", ("convaiinnovations/laya".to_string(), None)),
-        ("multilingual", ("convaiinnovations/laya-multilingual".to_string(), None)),
-        ("typed-decisions", ("convaiinnovations/laya-typed-decisions".to_string(), None)),
+        (
+            "multilingual",
+            ("convaiinnovations/laya-multilingual".to_string(), None),
+        ),
+        (
+            "typed-decisions",
+            ("convaiinnovations/laya-typed-decisions".to_string(), None),
+        ),
     ]
 }
 
@@ -50,10 +62,34 @@ fn aliases() -> &'static [(&'static str, &'static str)] {
 /// Question-id signatures of the four typed-decisions workflows.
 fn typed_decision_workflows() -> &'static [(&'static str, &'static [&'static str])] {
     &[
-        ("agent_trace_observability", &["action", "needs_review", "outcome", "risk", "urgency"]),
-        ("customer_service", &["action", "category", "churn_risk", "needs_human", "urgency"]),
-        ("invoice_processing", &["discrepancy_severity", "disposition", "duplicate", "matches_order", "urgency"]),
-        ("security_incidents", &["credential_compromise", "disposition", "severity", "true_positive", "urgency"]),
+        (
+            "agent_trace_observability",
+            &["action", "needs_review", "outcome", "risk", "urgency"],
+        ),
+        (
+            "customer_service",
+            &["action", "category", "churn_risk", "needs_human", "urgency"],
+        ),
+        (
+            "invoice_processing",
+            &[
+                "discrepancy_severity",
+                "disposition",
+                "duplicate",
+                "matches_order",
+                "urgency",
+            ],
+        ),
+        (
+            "security_incidents",
+            &[
+                "credential_compromise",
+                "disposition",
+                "severity",
+                "true_positive",
+                "urgency",
+            ],
+        ),
     ]
 }
 
@@ -323,7 +359,10 @@ impl Router {
                 return Ok(RouteDecision {
                     model: "typed-decisions".to_string(),
                     repo: repo_str(self.spec("typed-decisions")),
-                    reason: format!("question ids match the {} typed-decisions workflow", py_repr(wf)),
+                    reason: format!(
+                        "question ids match the {} typed-decisions workflow",
+                        py_repr(wf)
+                    ),
                     detection: None,
                     workflow: workflow.clone(),
                 });
@@ -370,7 +409,10 @@ impl Router {
         let (key, reason): (String, String) = if det.script == "unknown" {
             (
                 self.default.clone(),
-                format!("no letters detected in state; using default ({})", self.default),
+                format!(
+                    "no letters detected in state; using default ({})",
+                    self.default
+                ),
             )
         } else if det.script != "latin" {
             (
@@ -383,7 +425,10 @@ impl Router {
             )
         } else if !det.is_english {
             let reason = if let Some(l) = &det.language {
-                format!("Latin script but language looks like {}, not English", py_repr(l))
+                format!(
+                    "Latin script but language looks like {}, not English",
+                    py_repr(l)
+                )
             } else {
                 format!(
                     "Latin script, language not identified but {:.0}% non-English letters; not safe for the English checkpoint",
@@ -439,7 +484,6 @@ mod loading {
                     device: self.device.clone(),
                     token: self.token.clone(),
                     subfolder: sub,
-                    ..Default::default()
                 },
             )?);
             let mut cache = self.cache.lock().unwrap();
@@ -455,7 +499,10 @@ mod loading {
         /// Raises `max_loaded` to fit both the requested and already-resident checkpoints.
         pub fn preload(&self, names: Option<&[&str]>) -> Result<()> {
             let names: Vec<String> = match names {
-                Some(ns) => ns.iter().map(|n| normalise_name(n)).collect::<Result<_>>()?,
+                Some(ns) => ns
+                    .iter()
+                    .map(|n| normalise_name(n))
+                    .collect::<Result<_>>()?,
                 None => self.models.keys().cloned().collect(),
             };
             {

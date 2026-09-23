@@ -48,7 +48,10 @@ fn lang_parity() {
                 det.diacritic_rate, case["diacritic_rate"]
             ));
         }
-        if !approx(det.non_latin_fraction, case["non_latin_fraction"].as_f64().unwrap()) {
+        if !approx(
+            det.non_latin_fraction,
+            case["non_latin_fraction"].as_f64().unwrap(),
+        ) {
             errs.push(format!(
                 "non_latin_fraction {} != {}",
                 det.non_latin_fraction, case["non_latin_fraction"]
@@ -58,7 +61,11 @@ fn lang_parity() {
             failures.push(format!("input {:?}: {}", input, errs.join("; ")));
         }
     }
-    assert!(failures.is_empty(), "lang parity failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "lang parity failures:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -84,7 +91,11 @@ fn router_parity() {
             ));
         }
     }
-    assert!(failures.is_empty(), "router parity failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "router parity failures:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -95,8 +106,15 @@ fn email_parity() {
         let got = clean_email_body(input);
         let want = case["output"].as_str().unwrap();
         if got != want {
-            failures.push(format!("input {:?}:\n  got:  {:?}\n  want: {:?}", input, got, want));
+            failures.push(format!(
+                "input {:?}:\n  got:  {:?}\n  want: {:?}",
+                input, got, want
+            ));
         }
     }
-    assert!(failures.is_empty(), "email parity failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "email parity failures:\n{}",
+        failures.join("\n")
+    );
 }

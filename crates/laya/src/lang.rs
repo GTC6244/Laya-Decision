@@ -18,7 +18,10 @@ use unicode_general_category::{get_general_category, GeneralCategory};
 // Unicode blocks that the English (ModernBERT-large, 50k English BPE) checkpoint cannot read.
 const SCRIPT_RANGES: &[(&str, &[(u32, u32)])] = &[
     ("greek", &[(0x0370, 0x03FF), (0x1F00, 0x1FFF)]),
-    ("cyrillic", &[(0x0400, 0x052F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)]),
+    (
+        "cyrillic",
+        &[(0x0400, 0x052F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
+    ),
     ("armenian", &[(0x0530, 0x058F)]),
     ("hebrew", &[(0x0590, 0x05FF)]),
     (
@@ -48,9 +51,18 @@ const SCRIPT_RANGES: &[(&str, &[(u32, u32)])] = &[
     ("georgian", &[(0x10A0, 0x10FF)]),
     ("ethiopic", &[(0x1200, 0x137F)]),
     ("khmer", &[(0x1780, 0x17FF)]),
-    ("hangul", &[(0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)]),
-    ("kana", &[(0x3040, 0x309F), (0x30A0, 0x30FF), (0x31F0, 0x31FF)]),
-    ("han", &[(0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)]),
+    (
+        "hangul",
+        &[(0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)],
+    ),
+    (
+        "kana",
+        &[(0x3040, 0x309F), (0x30A0, 0x30FF), (0x31F0, 0x31FF)],
+    ),
+    (
+        "han",
+        &[(0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)],
+    ),
 ];
 
 /// A diacritic rate above this is taken as evidence the text is not English.
@@ -160,8 +172,8 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
         m.insert(
             "ro",
             [
-                "și", "să", "este", "sunt", "care", "pentru", "din", "dar", "după", "până",
-                "fără", "ale", "lui", "în", "fost", "acum", "vreau", "trebuie", "foarte", "acest",
+                "și", "să", "este", "sunt", "care", "pentru", "din", "dar", "după", "până", "fără",
+                "ale", "lui", "în", "fost", "acum", "vreau", "trebuie", "foarte", "acest",
                 "această", "acesta", "aceasta", "mi", "ți", "vă", "nu",
             ]
             .into_iter()
@@ -170,18 +182,104 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
         m.insert(
             "bn",
             [
-                "ami", "amar", "amake", "amra", "amader", "apni", "apnar", "apnake", "apnara",
-                "tumi", "tomar", "tomake", "tomra", "tader", "ota", "eita", "oita", "ekta", "ei",
-                "oi", "ki", "keno", "kivabe", "kibhabe", "kothay", "kokhon", "kobe", "koto",
-                "kintu", "jodi", "tahole", "ar", "theke", "jonno", "sathe", "shathe", "diye",
-                "niye", "moddhe", "kore", "korte", "korchi", "korsi", "korbo", "korechi",
-                "koreche", "korun", "koren", "korlam", "hobe", "hoyeche", "hoise", "hocche",
-                "hoyni", "chai", "chaina", "lagbe", "parchi", "parbo", "parchina", "peyechi",
-                "paini", "dite", "dilam", "diyechi", "nai", "khub", "onek", "ekhon", "akhon",
-                "ekhono", "abar", "ekbar", "duibar", "ajke", "kalke", "taka", "bhalo", "valo",
-                "kharap", "shomossa", "somossa", "dhonnobad", "bhai", "shob", "keu", "kichu",
-                "bolte", "bolun", "parben", "asbe", "jabe", "pabo", "ferot", "dorkar", "hoye",
-                "geche", "gese",
+                "ami",
+                "amar",
+                "amake",
+                "amra",
+                "amader",
+                "apni",
+                "apnar",
+                "apnake",
+                "apnara",
+                "tumi",
+                "tomar",
+                "tomake",
+                "tomra",
+                "tader",
+                "ota",
+                "eita",
+                "oita",
+                "ekta",
+                "ei",
+                "oi",
+                "ki",
+                "keno",
+                "kivabe",
+                "kibhabe",
+                "kothay",
+                "kokhon",
+                "kobe",
+                "koto",
+                "kintu",
+                "jodi",
+                "tahole",
+                "ar",
+                "theke",
+                "jonno",
+                "sathe",
+                "shathe",
+                "diye",
+                "niye",
+                "moddhe",
+                "kore",
+                "korte",
+                "korchi",
+                "korsi",
+                "korbo",
+                "korechi",
+                "koreche",
+                "korun",
+                "koren",
+                "korlam",
+                "hobe",
+                "hoyeche",
+                "hoise",
+                "hocche",
+                "hoyni",
+                "chai",
+                "chaina",
+                "lagbe",
+                "parchi",
+                "parbo",
+                "parchina",
+                "peyechi",
+                "paini",
+                "dite",
+                "dilam",
+                "diyechi",
+                "nai",
+                "khub",
+                "onek",
+                "ekhon",
+                "akhon",
+                "ekhono",
+                "abar",
+                "ekbar",
+                "duibar",
+                "ajke",
+                "kalke",
+                "taka",
+                "bhalo",
+                "valo",
+                "kharap",
+                "shomossa",
+                "somossa",
+                "dhonnobad",
+                "bhai",
+                "shob",
+                "keu",
+                "kichu",
+                "bolte",
+                "bolun",
+                "parben",
+                "asbe",
+                "jabe",
+                "pabo",
+                "ferot",
+                "dorkar",
+                "hoye",
+                "geche",
+                "gese",
             ]
             .into_iter()
             .collect(),
@@ -204,14 +302,14 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
 // Letters that ordinary English does not use.
 const DIACRITICS: &str = concat!(
     "àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœ", // Western European
-    "ăâîșțşţ",                        // Romanian
-    "ąćęłńśźż",                       // Polish
-    "čďěňřšťůž",                      // Czech / Slovak
-    "őű",                            // Hungarian
-    "ğı",                            // Turkish (text is lowercased before matching)
-    "āēģīķļņūž",                      // Baltic
-    "đ",                             // Serbo-Croatian / Vietnamese
-    "ə",                             // Azerbaijani
+    "ăâîșțşţ",                         // Romanian
+    "ąćęłńśźż",                        // Polish
+    "čďěňřšťůž",                       // Czech / Slovak
+    "őű",                              // Hungarian
+    "ğı",                              // Turkish (text is lowercased before matching)
+    "āēģīķļņūž",                       // Baltic
+    "đ",                               // Serbo-Croatian / Vietnamese
+    "ə",                               // Azerbaijani
 );
 
 fn non_en_diacritics() -> &'static HashSet<char> {
@@ -456,12 +554,7 @@ fn non_latin_words(text: &str) -> Vec<String> {
     }
     runs.into_iter()
         .filter(|w| {
-            w.chars().count() >= 2
-                && !w
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
+            w.chars().count() >= 2 && !w.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
         })
         .collect()
 }
@@ -481,7 +574,10 @@ pub fn latin_profile(text: &str) -> LatinProfile {
     // Order matches Python: identifier-strip the ORIGINAL text, replace 'İ'->'i', lower, then findall.
     let stripped = identifier_re().replace_all(text, " ");
     let normalized = stripped.replace('\u{0130}', "i").to_lowercase();
-    let words: Vec<&str> = word_re().find_iter(&normalized).map(|m| m.as_str()).collect();
+    let words: Vec<&str> = word_re()
+        .find_iter(&normalized)
+        .map(|m| m.as_str())
+        .collect();
 
     let lowered = text.to_lowercase();
     let diac_set = non_en_diacritics();
@@ -534,9 +630,10 @@ pub fn latin_profile(text: &str) -> LatinProfile {
 
     let mut language: Option<String> = None;
     if let Some(bl) = best_lg {
-        if best >= std::cmp::max(2, en + 2) {
-            language = Some(bl.to_string());
-        } else if non_english && best >= std::cmp::max(2, en) {
+        // A non-English language needs a clear margin over English function words, or (with
+        // non-English letters present) at least a two-hit tie. Mirrors the elif ladder in
+        // laya/lang.py, with the two "name best_lg" branches combined.
+        if best >= std::cmp::max(2, en + 2) || (non_english && best >= std::cmp::max(2, en)) {
             language = Some(bl.to_string());
         } else if en > 0 && !non_english {
             language = Some("en".to_string());

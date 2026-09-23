@@ -149,7 +149,10 @@ pub fn resolve_noul_labels(labels: Option<&Value>) -> Result<(String, String)> {
     };
     let (f, t) = match labels {
         None | Some(Value::Null) => {
-            return Ok((DEFAULT_NOUL_FALSE.to_string(), DEFAULT_NOUL_TRUE.to_string()))
+            return Ok((
+                DEFAULT_NOUL_FALSE.to_string(),
+                DEFAULT_NOUL_TRUE.to_string(),
+            ))
         }
         Some(Value::Object(m)) => {
             let keys: std::collections::BTreeSet<&str> = m.keys().map(|s| s.as_str()).collect();
@@ -348,10 +351,7 @@ pub fn confidence_from_probs(p: &[f64], k: usize) -> f64 {
         return 1.0;
     }
     let p = &p[..k.min(p.len())];
-    let ent: f64 = -p
-        .iter()
-        .map(|&v| v * v.clamp(1e-12, 1.0).ln())
-        .sum::<f64>();
+    let ent: f64 = -p.iter().map(|&v| v * v.clamp(1e-12, 1.0).ln()).sum::<f64>();
     (1.0 - ent / (k as f64).ln()).clamp(0.0, 1.0)
 }
 
@@ -382,7 +382,9 @@ pub fn temp_bucket(qtype: usize, k: usize) -> String {
     } else {
         "11+"
     };
-    let name = QType::from_index(qtype).map(|q| q.name()).unwrap_or("choice");
+    let name = QType::from_index(qtype)
+        .map(|q| q.name())
+        .unwrap_or("choice");
     format!("{}:{}", name, size)
 }
 
@@ -456,13 +458,25 @@ mod tests {
     /// A deterministic fake tokenizer for structural tests (one id per whitespace word).
     struct Fake;
     impl Tokenizer for Fake {
-        fn cls_id(&self) -> u32 { 1 }
-        fn sep_id(&self) -> u32 { 2 }
-        fn mask_id(&self) -> u32 { 3 }
-        fn pad_id(&self) -> u32 { 0 }
-        fn mask_token(&self) -> &str { "[MASK]" }
+        fn cls_id(&self) -> u32 {
+            1
+        }
+        fn sep_id(&self) -> u32 {
+            2
+        }
+        fn mask_id(&self) -> u32 {
+            3
+        }
+        fn pad_id(&self) -> u32 {
+            0
+        }
+        fn mask_token(&self) -> &str {
+            "[MASK]"
+        }
         fn encode(&self, text: &str) -> Vec<u32> {
-            text.split_whitespace().map(|w| 100 + (w.len() as u32)).collect()
+            text.split_whitespace()
+                .map(|w| 100 + (w.len() as u32))
+                .collect()
         }
     }
 
@@ -506,7 +520,10 @@ mod tests {
             crit: json!(["low", "high"]),
             labels: None,
         };
-        assert_eq!(render_options(&score).unwrap(), vec!["level 0: low", "level 1: high"]);
+        assert_eq!(
+            render_options(&score).unwrap(),
+            vec!["level 0: low", "level 1: high"]
+        );
 
         let noul = InternalQ {
             t: QType::Noul,
@@ -527,7 +544,10 @@ mod tests {
         };
         assert_eq!(
             render_options(&noul_default).unwrap(),
-            vec!["false: no, the statement does not hold", "true: yes, the statement holds"]
+            vec![
+                "false: no, the statement does not hold",
+                "true: yes, the statement holds"
+            ]
         );
     }
 
@@ -547,11 +567,12 @@ mod tests {
             crit: json!({"a": null, "b": null}),
             labels: None,
         };
-        let (ids, markers) = build_sequence(&Fake, &json!("some state text"), &q, 512, 192, None, false).unwrap();
+        let (ids, markers) =
+            build_sequence(&Fake, &json!("some state text"), &q, 512, 192, None, false).unwrap();
         assert_eq!(ids[0], 1); // [CLS]
         assert_eq!(*ids.last().unwrap(), 2); // trailing [SEP]
         assert_eq!(markers.len(), 2); // one marker per option
-        // each marker points at a [MASK] id
+                                      // each marker points at a [MASK] id
         for &m in &markers {
             assert_eq!(ids[m], 3);
         }

@@ -5,9 +5,16 @@ use laya::shortlist::{embed_fn_from_agent, shortlist_choice};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = std::env::var("LAYA_MODEL").unwrap_or_else(|_| "convaiinnovations/laya".to_string());
+    let model =
+        std::env::var("LAYA_MODEL").unwrap_or_else(|_| "convaiinnovations/laya".to_string());
     let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty());
-    let agent = Agent::load(&model, LoadOptions { device, ..Default::default() })?;
+    let agent = Agent::load(
+        &model,
+        LoadOptions {
+            device,
+            ..Default::default()
+        },
+    )?;
 
     // A large label set (25 intents); shortlist to the 5 most relevant before scoring.
     let criteria = json!({
@@ -19,7 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "invoice_copy": null, "tax_question": null, "partnership": null, "press_inquiry": null,
         "other": null
     });
-    let state = json!({ "message": "I was double charged and want my money back for the duplicate." });
+    let state =
+        json!({ "message": "I was double charged and want my money back for the duplicate." });
 
     let embed = embed_fn_from_agent(&agent, 512, 32);
     let top = shortlist_choice(&state, &criteria, &embed, 5, None)?;

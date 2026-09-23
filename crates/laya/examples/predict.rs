@@ -10,7 +10,8 @@ use laya::{triage_questions, State};
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = std::env::var("LAYA_MODEL").unwrap_or_else(|_| "convaiinnovations/laya".to_string());
+    let model =
+        std::env::var("LAYA_MODEL").unwrap_or_else(|_| "convaiinnovations/laya".to_string());
     let subfolder = std::env::var("LAYA_SUBFOLDER").ok();
     let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty());
 
@@ -23,7 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     )?;
-    println!("loaded {model} on {} in {:?}", device.as_deref().unwrap_or("cpu"), t.elapsed());
+    println!(
+        "loaded {model} on {} in {:?}",
+        device.as_deref().unwrap_or("cpu"),
+        t.elapsed()
+    );
 
     let state: State = serde_json::json!({
         "message": "I was charged twice this month and I'm furious. Refund me now or I'm leaving."

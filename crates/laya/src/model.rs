@@ -18,6 +18,9 @@ const LN_EPS: f64 = 1e-5;
 /// Masked-option fill, matching `logits.masked_fill(~marker_mask, -1e4)`.
 const MASK_FILL: f64 = -1e4;
 
+/// `(logits, act_logits)` as row-major host vectors.
+pub type ForwardOutput = (Vec<Vec<f32>>, Vec<Vec<f32>>);
+
 fn e(err: candle_core::Error) -> LayaError {
     LayaError::Model(err.to_string())
 }
@@ -43,12 +46,12 @@ impl HeadLayer {
         let k = qkv.narrow(2, d, d).map_err(e)?;
         let v = qkv.narrow(2, 2 * d, d).map_err(e)?;
         let split = |t: &Tensor| -> Result<Tensor> {
-            Ok(t.reshape((b, s, self.n_heads, self.head_dim))
+            t.reshape((b, s, self.n_heads, self.head_dim))
                 .map_err(e)?
                 .transpose(1, 2)
                 .map_err(e)?
                 .contiguous()
-                .map_err(e)?) // [b,h,s,hd]
+                .map_err(e) // [b,h,s,hd]
         };
         let q = split(&q)?;
         let k = split(&k)?;
@@ -78,7 +81,14 @@ impl HeadLayer {
         let normed2 = self.norm2.forward(&x).map_err(e)?;
         let ff = self
             .linear2
-            .forward(&self.linear1.forward(&normed2).map_err(e)?.relu().map_err(e)?)
+            .forward(
+                &self
+                    .linear1
+                    .forward(&normed2)
+                    .map_err(e)?
+                    .relu()
+                    .map_err(e)?,
+            )
             .map_err(e)?;
         (x + ff).map_err(e)
     }
@@ -132,9 +142,8 @@ impl DecisionModel {
         let encoder = ModernBert::load(vb.clone(), &mbcfg).map_err(e)?;
 
         let get = |name: &str| -> Result<Tensor> { vb.get_unchecked(name).map_err(e) };
-        let linear = |w: &str, b: &str| -> Result<Linear> {
-            Ok(Linear::new(get(w)?, Some(get(b)?)))
-        };
+        let linear =
+            |w: &str, b: &str| -> Result<Linear> { Ok(Linear::new(get(w)?, Some(get(b)?))) };
         let layernorm = |w: &str, b: &str| -> Result<LayerNorm> {
             Ok(LayerNorm::new(get(w)?, get(b)?, LN_EPS))
         };
@@ -209,7 +218,11 @@ impl DecisionModel {
         )
         .map_err(e)?;
         let attn = Tensor::from_vec(
-            attention.iter().flatten().map(|&x| x as f32).collect::<Vec<f32>>(),
+            attention
+                .iter()
+                .flatten()
+                .map(|&x| x as f32)
+                .collect::<Vec<f32>>(),
             (n, l),
             dev,
         )
@@ -217,14 +230,18 @@ impl DecisionModel {
         let hidden = self.encoder.forward(&ids, &attn).map_err(e)?; // [n, l, d]
         let mask = attn.unsqueeze(2).map_err(e)?; // [n, l, 1]
         let summed = hidden.broadcast_mul(&mask).map_err(e)?.sum(1).map_err(e)?; // [n, d]
-        let counts = mask.sum(1).map_err(e)?.clamp(1.0f32, f32::INFINITY).map_err(e)?; // [n, 1]
+        let counts = mask
+            .sum(1)
+            .map_err(e)?
+            .clamp(1.0f32, f32::INFINITY)
+            .map_err(e)?; // [n, 1]
         let pooled = summed.broadcast_div(&counts).map_err(e)?; // [n, d]
         pooled.to_vec2().map_err(e)
     }
 
     /// Run one collated batch. Returns `(logits, act_logits)` as row-major host vectors:
     /// `logits[row][0..kmax]` (masked options filled with -1e4) and `act_logits[row][0..n_act]`.
-    pub fn forward(&self, b: &CollatedBatch) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    pub fn forward(&self, b: &CollatedBatch) -> Result<ForwardOutput> {
         let dev = &self.device;
         let n = b.input_ids.len();
         let l = b.input_ids.first().map(|r| r.len()).unwrap_or(0);
@@ -347,7 +364,10 @@ impl DecisionModel {
 /// `layer_norm_eps`), with ModernBERT defaults for any missing key.
 fn build_mb_config(cfg: &serde_json::Value) -> MbConfig {
     let u = |key: &str, default: usize| -> usize {
-        cfg.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
+        cfg.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(default)
     };
     let f = |key: &str, default: f64| -> f64 {
         cfg.get(key).and_then(|v| v.as_f64()).unwrap_or(default)

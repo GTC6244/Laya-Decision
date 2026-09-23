@@ -115,7 +115,7 @@ fn is_quote_header(re: &Regexes, line: &str) -> bool {
     }
     // `Em (?=.*\d)…escreveu:` / `El (?=.*\d)…escribió:`: base pattern + a digit anywhere in line.
     let has_digit = re.digit.is_match(line);
-    (has_digit && re.qh_em.is_match(line)) || (has_digit && re.qh_el.is_match(line))
+    has_digit && (re.qh_em.is_match(line) || re.qh_el.is_match(line))
 }
 
 /// First letter is uppercase: a fresh sentence, not a wrapped line. Uncased scripts never start
@@ -223,7 +223,10 @@ pub fn clean_email_body_with(body: &str, max_chars: usize) -> String {
     let re = regexes();
 
     // Normalize newlines: \r\n, \r, and the literal two-char sequence \n all become real newlines.
-    let text = body.replace("\r\n", "\n").replace('\r', "\n").replace("\\n", "\n");
+    let text = body
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace("\\n", "\n");
 
     let src: Vec<&str> = text.split('\n').collect();
     let mut lines: Vec<String> = Vec::new();
@@ -261,10 +264,10 @@ pub fn clean_email_body_with(body: &str, max_chars: usize) -> String {
         std::cmp::min((len as f64 * 0.6) as isize, len as isize - 8),
     );
     let start = start_i as usize; // start >= 1, so non-negative
-    for i in start..len {
-        let n = lines[i].trim().chars().count();
-        let sig = n <= 40 && re.signature_markers.iter().any(|p| p.is_match(&lines[i]));
-        let dev = n <= 60 && re.device_footer.is_match(&lines[i]);
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let n = line.trim().chars().count();
+        let sig = n <= 40 && re.signature_markers.iter().any(|p| p.is_match(line));
+        let dev = n <= 60 && re.device_footer.is_match(line);
         if sig || dev {
             cut = i;
             break;
