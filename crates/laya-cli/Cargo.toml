@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Command-line interface for the Laya-Decision engine (installs the `laya` binary)"
+readme = "README.md"
 keywords = ["nlp", "classification", "cli", "candle"]
 categories = ["command-line-utilities", "text-processing"]
 

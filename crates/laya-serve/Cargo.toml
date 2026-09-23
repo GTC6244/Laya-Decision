@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Jev-compatible HTTP server for the Laya-Decision engine (installs the `laya-serve` binary)"
+readme = "README.md"
 keywords = ["nlp", "classification", "server", "candle"]
 categories = ["web-programming::http-server", "text-processing"]
 

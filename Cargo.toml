@@ -3,11 +3,11 @@ resolver = "2"
 members = ["crates/laya", "crates/laya-serve", "crates/laya-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"
 license = "Apache-2.0"
-repository = "https://github.com/NandhaKishorM/laya"
+repository = "https://github.com/GTC6244/Laya-Decision"
 description = "Pure-Rust port of the Laya non-autoregressive System-1 decision engine"
 
 [workspace.dependencies]
