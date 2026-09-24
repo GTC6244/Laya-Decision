@@ -24,6 +24,10 @@ dependency-free.
 - **`score`** — an ordinal 0..N-1. Returns the expected value.
 - **`noul`** — boolean. Returns `P(true)`.
 
+Every answer carries two confidences: `confidence` (normalized entropy for `choice`/`score`, `max(p)`
+for `noul`) and `answer_confidence` — the calibrated `max(p)` on **every** question type, so a caller
+can gate across types on a single threshold. This mirrors upstream Laya's calibrated confidence.
+
 ## Workspace layout
 
 | crate (crates.io) | dir | what |
@@ -81,9 +85,13 @@ let top = shortlist_choice(&state, &criteria, &embed, 20, None)?; // top-20 labe
 ```bash
 laya "I was charged twice, please refund"      # routing decision only (offline, no download)
 laya "Refactor this service" --predict         # full answers (downloads the checkpoint)
+laya "My payment failed twice" --preset triage # answer a ready-made preset (implies --predict)
 laya "Mein Konto wurde zweimal belastet" --lang de
 laya                                           # interactive mode
 ```
+
+`--preset` answers one of the built-in question presets (`email`, `guard`, `moderation`, `router`,
+`triage`) instead of the router questions, and implies `--predict`.
 
 `--json` prints the raw result; `--model`/`--task`/`--device` force routing/device.
 

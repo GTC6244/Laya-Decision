@@ -344,6 +344,21 @@ pub fn softmax(z: &[f64]) -> Vec<f64> {
     exps.into_iter().map(|v| v / sum).collect()
 }
 
+/// Probability mass on the answer being reported: `max(p[:k])`, clamped to `[0, 1]`.
+///
+/// This is the quantity temperature scaling fits and every calibration figure is computed on
+/// (`conf = max(probs)`), so it is the one confidence with the calibration guarantee the gating
+/// docs rely on. [`confidence_from_probs`] reports a different quantity on a different scale and
+/// carries no such guarantee, so the two must not be compared against the same threshold.
+pub fn answer_confidence(p: &[f64], k: usize) -> f64 {
+    if k < 1 {
+        return 1.0;
+    }
+    let p = &p[..k.min(p.len())];
+    let max = p.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    max.clamp(0.0, 1.0)
+}
+
 /// Normalized Shannon-entropy confidence: `1 - H(p)/log(k)`, clamped to `[0, 1]`.
 /// `p` is expected to already hold the `k` option probabilities.
 pub fn confidence_from_probs(p: &[f64], k: usize) -> f64 {
@@ -495,6 +510,17 @@ mod tests {
     fn serialize_state_passes_strings_through() {
         assert_eq!(serialize_state(&json!("hello")), "hello");
         assert_eq!(serialize_state(&json!({"k": "v"})), r#"{"k": "v"}"#);
+    }
+
+    #[test]
+    fn answer_confidence_is_max_prob() {
+        // max(p[:k]), clamped to [0, 1]; k < 1 is defined as fully confident.
+        assert_eq!(answer_confidence(&[0.2, 0.7, 0.1], 3), 0.7);
+        assert_eq!(answer_confidence(&[0.6, 0.4], 2), 0.6);
+        assert_eq!(answer_confidence(&[0.9], 1), 0.9);
+        assert_eq!(answer_confidence(&[], 0), 1.0);
+        // Only the first k entries count.
+        assert_eq!(answer_confidence(&[0.3, 0.3, 0.99], 2), 0.3);
     }
 
     #[test]

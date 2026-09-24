@@ -15,7 +15,7 @@ name = "laya-serve"
 path = "src/main.rs"
 
 [dependencies]
-laya = { package = "laya-decision", path = "../laya", version = "0.1" }
+laya = { package = "laya-decision", path = "../laya", version = "0.2" }
 serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true

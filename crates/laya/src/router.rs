@@ -370,18 +370,19 @@ impl Router {
         }
 
         if let Some(lang) = hints.lang {
-            let key = if english_from_code(Some(lang)).unwrap_or(false) {
-                "english"
-            } else {
-                "multilingual"
-            };
-            return Ok(RouteDecision {
-                model: key.to_string(),
-                repo: repo_str(self.spec(key)),
-                reason: format!("explicit lang={}", py_repr(lang)),
-                detection: None,
-                workflow,
-            });
+            // An explicit `lang` is decisive only when the code names a language. Blank or
+            // whitespace resolves to no usable hint, so it falls through to lang_guess/detection
+            // exactly as an abstaining hint does; real English/non-English codes still route now.
+            if let Some(resolved) = english_from_code(Some(lang)) {
+                let key = if resolved { "english" } else { "multilingual" };
+                return Ok(RouteDecision {
+                    model: key.to_string(),
+                    repo: repo_str(self.spec(key)),
+                    reason: format!("explicit lang={}", py_repr(lang)),
+                    detection: None,
+                    workflow,
+                });
+            }
         }
 
         // Per-call hint first, then the one installed on the Router.
@@ -563,6 +564,72 @@ mod loading {
         while cache.order.len() > cache.max_loaded {
             let victim = cache.order.remove(0);
             cache.agents.remove(&victim);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn de_state() -> Value {
+        json!({ "text": "Mein Konto wurde zweimal belastet" })
+    }
+
+    #[test]
+    fn explicit_lang_code_routes() {
+        let r = Router::with_defaults().unwrap();
+        let en = r
+            .route(
+                &de_state(),
+                None,
+                &RouteHints {
+                    lang: Some("en"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(en.model, "english");
+        assert!(en.reason.contains("explicit lang"));
+
+        let de = r
+            .route(
+                &de_state(),
+                None,
+                &RouteHints {
+                    lang: Some("de"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(de.model, "multilingual");
+    }
+
+    #[test]
+    fn blank_lang_falls_through_to_detection() {
+        // A blank/whitespace explicit lang names no language, so it must not decide routing;
+        // detection sees German and routes multilingual (upstream #292).
+        let r = Router::with_defaults().unwrap();
+        for blank in ["", "   ", "\t"] {
+            let d = r
+                .route(
+                    &de_state(),
+                    None,
+                    &RouteHints {
+                        lang: Some(blank),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                d.model, "multilingual",
+                "blank lang {blank:?} should fall through"
+            );
+            assert!(
+                !d.reason.contains("explicit lang"),
+                "blank lang {blank:?} must not route as explicit"
+            );
         }
     }
 }

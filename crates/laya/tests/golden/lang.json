@@ -20,9 +20,9 @@
   {
     "input": "Mein Konto wurde zweimal belastet",
     "script": "latin",
-    "language": null,
-    "is_english": true,
-    "language_undecided": true,
+    "language": "de",
+    "is_english": false,
+    "language_undecided": false,
     "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0
   },

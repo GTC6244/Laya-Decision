@@ -6,8 +6,8 @@
   },
   {
     "input": "Mein Konto wurde zweimal belastet",
-    "model": "english",
-    "reason": "Latin script, language not identified and no non-English letters; using default (english)"
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'de', not English"
   },
   {
     "input": {

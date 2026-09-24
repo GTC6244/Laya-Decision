@@ -18,17 +18,37 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router as AxumRouter,
 };
+use laya::error::LayaError;
 use laya::router::{normalise_name, RouteHints, Router, RouterOptions};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 /// Checkpoint names the router understands.
 const KNOWN_MODELS: [&str; 3] = ["english", "multilingual", "typed-decisions"];
+
+// Guardrails for unauthenticated remote input. The state is tokenized once per question and
+// collated into one tensor, so an unbounded body can OOM the worker; the single-permit gate means
+// one large request would also starve /health. Mirrors the limits in upstream `laya/serve.py`.
+const MAX_QUESTIONS: usize = 64;
+const MAX_STATE_CHARS: usize = 50_000;
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Constant-time byte comparison, so bearer-token checks do not leak the token by timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -45,6 +65,18 @@ fn env_bool(name: &str, default: bool) -> bool {
             "1" | "true" | "yes" | "on"
         ),
         Err(_) => default,
+    }
+}
+
+/// Port from `LAYA_PORT`, validated. Exits with a message instead of silently falling back.
+fn resolve_port() -> u16 {
+    let raw = std::env::var("LAYA_PORT").unwrap_or_else(|_| "8000".to_string());
+    match raw.trim().parse::<u32>() {
+        Ok(p) if (1..=65535).contains(&p) => p as u16,
+        _ => {
+            eprintln!("laya-serve: invalid LAYA_PORT {raw:?}: must be an integer 1-65535");
+            std::process::exit(2);
+        }
     }
 }
 
@@ -109,14 +141,15 @@ async fn systemone(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Optional bearer auth.
+    // Optional bearer auth. Compared in constant time over raw bytes so no header a client can
+    // send leaks the token by timing or crashes the comparison.
     if let Some(key) = &app.api_key {
-        let ok = headers
+        let expected = format!("Bearer {key}");
+        let supplied = headers
             .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v == format!("Bearer {key}"))
-            .unwrap_or(false);
-        if !ok {
+            .map(|v| v.as_bytes())
+            .unwrap_or(b"");
+        if !constant_time_eq(supplied, expected.as_bytes()) {
             return Err(err(
                 StatusCode::UNAUTHORIZED,
                 "invalid or missing bearer token",
@@ -144,6 +177,32 @@ async fn systemone(
             ))
         }
     };
+
+    // Reject oversized inference requests before tokenization (413).
+    if questions.len() > MAX_QUESTIONS {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!(
+                "too many questions ({} > {})",
+                questions.len(),
+                MAX_QUESTIONS
+            ),
+        ));
+    }
+    let state_len = match &state {
+        Value::String(s) => s.chars().count(),
+        other => other.to_string().chars().count(),
+    };
+    if state_len > MAX_STATE_CHARS {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!(
+                "state too large ({} > {} chars)",
+                state_len, MAX_STATE_CHARS
+            ),
+        ));
+    }
+
     let model = resolve_model(obj.get("model").and_then(|v| v.as_str()));
 
     let router = app.router.clone();
@@ -168,8 +227,14 @@ async fn systemone(
 
     match result {
         Ok(Ok(v)) => Ok(Json(v)),
-        Ok(Err(e)) => Err(err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string())),
-        Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
+        // Question-validation errors name the question and what to fix: safe to return.
+        Ok(Err(e @ LayaError::InvalidQuestion(_))) => {
+            Err(err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()))
+        }
+        // Anything else (download, tokenizer, model, OOM) may carry paths or weights details;
+        // never leak it to clients.
+        Ok(Err(_)) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed")),
+        Err(_) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed")),
     }
 }
 
@@ -200,13 +265,12 @@ async fn main() {
     let app = AxumRouter::new()
         .route("/health", get(health))
         .route("/v1/systemone", post(systemone))
+        // Refuse to buffer a body larger than the cap, whatever the client's declared length.
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 
     let host = std::env::var("LAYA_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port: u16 = std::env::var("LAYA_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8000);
+    let port: u16 = resolve_port();
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .expect("valid bind address");

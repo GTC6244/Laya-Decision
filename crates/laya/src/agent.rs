@@ -8,8 +8,8 @@ use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
 use crate::common::{
-    build_sequence, clamp_temperature, collate_items, confidence_from_probs, render_options,
-    round4, softmax, temp_bucket, InternalQ, Item, QType,
+    answer_confidence, build_sequence, clamp_temperature, collate_items, confidence_from_probs,
+    render_options, round4, softmax, temp_bucket, InternalQ, Item, QType,
 };
 use crate::error::{LayaError, Result};
 use crate::model::DecisionModel;
@@ -291,6 +291,11 @@ impl Agent {
             let z: Vec<f64> = logits[r][..k].iter().map(|&v| v as f64 / t_scale).collect();
             let p = softmax(&z);
             let conf = round4(confidence_from_probs(&p, k));
+            // `confidence` means one thing for `noul` (max(p)) and another for `choice`/`score`
+            // (normalized entropy), and only the first is the quantity temperature scaling fits and
+            // ECE measures. Report both: `answer_confidence` is the calibrated one on every type, so
+            // a caller can gate across question types on a single number.
+            let ans_conf = round4(answer_confidence(&p, k));
 
             let act_p = softmax(&act[r].iter().map(|&v| v as f64).collect::<Vec<_>>());
             let act_probability = round4(act_p.first().copied().unwrap_or(0.0));
@@ -314,6 +319,7 @@ impl Agent {
                         "choice": keys.get(best).cloned().unwrap_or_default(),
                         "probabilities": Value::Object(probs),
                         "confidence": conf,
+                        "answer_confidence": ans_conf,
                         "action": action,
                     })
                 }
@@ -340,6 +346,7 @@ impl Agent {
                         "legend": Value::Object(legend),
                         "probabilities": Value::Object(probs),
                         "confidence": conf,
+                        "answer_confidence": ans_conf,
                         "action": action,
                     })
                 }
@@ -349,6 +356,8 @@ impl Agent {
                         "type": "noul",
                         "noul": round4(p_true),
                         "confidence": round4(p_true.max(1.0 - p_true)),
+                        // identical here: over two options max(p_true, 1 - p_true) is max(p)
+                        "answer_confidence": ans_conf,
                         "action": action,
                     })
                 }
@@ -505,6 +514,21 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
                         qid
                     )));
                 }
+                // `render_options` reads only `false`/`true` out by name, so a dict keyed any other
+                // way is not a noul description at all — it used to be silently dropped and replaced
+                // with the defaults (#156). A noul is a boolean question, so those are its only keys.
+                if let Some(map) = c.as_object() {
+                    let mut keys: Vec<String> = map.keys().map(|k| k.to_lowercase()).collect();
+                    if keys.iter().any(|k| k != "true" && k != "false") {
+                        keys.sort();
+                        let shown: Vec<Value> = keys.into_iter().map(Value::String).collect();
+                        return Err(LayaError::InvalidQuestion(format!(
+                            "question {:?}: a noul question takes 'criteria' keyed only 'true'/'false' (either or both, and omitted is fine), got {}. Those keys are the option texts the model reads; any other key was silently dropped and replaced with the defaults. If you want the answer worded differently, keep 'criteria' keyed 'true'/'false' and set 'labels' instead.",
+                            qid,
+                            Value::Array(shown)
+                        )));
+                    }
+                }
             }
         }
     }
@@ -617,10 +641,13 @@ fn require(p: PathBuf) -> Result<PathBuf> {
 
 fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
     use hf_hub::api::sync::ApiBuilder;
+    // An empty token (explicit or from an empty `HF_TOKEN`) is treated as no token, so we never
+    // send an empty `Bearer` header to the hub (parity with upstream `token or HF_TOKEN or None`).
     let token = opts
         .token
         .clone()
-        .or_else(|| std::env::var("HF_TOKEN").ok());
+        .or_else(|| std::env::var("HF_TOKEN").ok())
+        .filter(|t| !t.is_empty());
     let api = ApiBuilder::new()
         .with_token(token)
         .build()

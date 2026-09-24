@@ -223,10 +223,18 @@ pub fn clean_email_body_with(body: &str, max_chars: usize) -> String {
     let re = regexes();
 
     // Normalize newlines: \r\n, \r, and the literal two-char sequence \n all become real newlines.
-    let text = body
+    let mut text = body
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace("\\n", "\n");
+
+    // Bound regex work before the expensive patterns below: the disclaimer patterns use bounded
+    // `[^.]{0,60/80/100}` alternations whose cost grows with input length, and only `max_chars`
+    // are ever returned. Truncate so one enormous body cannot dominate matching (parity with
+    // upstream `clean_email_body`).
+    if text.chars().count() > max_chars * 4 {
+        text = text.chars().take(max_chars * 4).collect();
+    }
 
     let src: Vec<&str> = text.split('\n').collect();
     let mut lines: Vec<String> = Vec::new();

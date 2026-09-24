@@ -56,4 +56,4 @@ pub use agent::{Agent, SystemOneResult};
 pub use shortlist::{embed_fn_from_agent, predict_shortlist, shortlist_choice};
 
 /// Crate version, mirroring the upstream Laya release this port tracks.
-pub const UPSTREAM_VERSION: &str = "0.3.10";
+pub const UPSTREAM_VERSION: &str = "0.3.20";
