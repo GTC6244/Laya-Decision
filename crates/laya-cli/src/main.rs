@@ -12,8 +12,26 @@ use std::io::{self, Write};
 
 use clap::Parser;
 use laya::router::{RouteHints, Router, RouterOptions};
-use laya::router_questions;
+use laya::{
+    email_questions, guard_questions, moderation_questions, router_questions, triage_questions,
+    Questions,
+};
 use serde_json::{json, Value};
+
+/// Ready-made question presets a prediction can run instead of `router_questions()`.
+const PRESETS: [&str; 5] = ["email", "guard", "moderation", "router", "triage"];
+
+/// Build a preset's questions by name. `name` is validated by clap against [`PRESETS`].
+fn preset_questions(name: &str) -> Questions {
+    match name {
+        "email" => email_questions(None),
+        "guard" => guard_questions(),
+        "moderation" => moderation_questions(),
+        "router" => router_questions(),
+        "triage" => triage_questions(),
+        _ => router_questions(),
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -35,6 +53,10 @@ struct Cli {
     /// Force a typed-decisions workflow instead of detecting it.
     #[arg(long)]
     task: Option<String>,
+    /// Answer a ready-made question preset (email, guard, moderation, router, triage)
+    /// instead of the router questions; implies --predict.
+    #[arg(long, value_name = "NAME", value_parser = PRESETS)]
+    preset: Option<String>,
     /// Compute device, e.g. cpu or metal.
     #[arg(long)]
     device: Option<String>,
@@ -105,8 +127,12 @@ fn show_answers(result: &Value) {
 fn run(text: &str, cli: &Cli, router: &Router) -> i32 {
     let state = json!({ "text": text });
     let h = hints(cli);
-    if cli.predict {
-        match router.predict(&state, &router_questions(), &h) {
+    if cli.predict || cli.preset.is_some() {
+        let questions = match &cli.preset {
+            Some(name) => preset_questions(name),
+            None => router_questions(),
+        };
+        match router.predict(&state, &questions, &h) {
             Ok(result) => {
                 let j = result.to_json();
                 if cli.json {

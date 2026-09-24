@@ -107,7 +107,13 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
             [
                 "der", "die", "das", "und", "ist", "ein", "eine", "den", "dem", "nicht", "mit",
                 "für", "auf", "von", "zu", "sich", "auch", "werden", "wurde", "haben", "sind",
-                "oder", "aber",
+                "oder", "aber", "ich", "wir", "mir", "mich", "dir", "dich", "uns", "mein", "meine",
+                "meinen", "meinem", "meiner", "diese", "dieser", "diesen", "dieses", "einen",
+                "einem", "einer", "wie", "wo", "wann", "welche", "im", "zum", "zur", "aus", "bei",
+                "nach", "noch", "bitte", "heute", "jetzt", "kann", "kannst", "habe", "gibt",
+                "wird",
+                // shared with English on purpose: counted for English alone, they outvoted short German
+                "in", "was",
             ]
             .into_iter()
             .collect(),
@@ -424,10 +430,26 @@ fn iter_text(v: &Value, depth: usize, out: &mut Vec<String>) {
 
 /// Flatten a state into the text used for detection (keys are ignored). `max_chars` default 4000.
 pub fn state_text(state: &Value, max_chars: usize) -> String {
+    let mut leaves: Vec<String> = Vec::new();
+    iter_text(state, 0, &mut leaves);
+    // Bound the join work before truncation: only `max_chars` are ever returned, so stop
+    // materializing leaves once the budget is spent (parity with upstream `state_text`).
     let mut parts: Vec<String> = Vec::new();
-    iter_text(state, 0, &mut parts);
-    let joined = parts.join(" ");
-    joined.chars().take(max_chars).collect()
+    let mut budget = max_chars as isize;
+    for leaf in leaves {
+        if budget <= 0 {
+            break;
+        }
+        let leaf_len = leaf.chars().count() as isize;
+        if leaf_len > budget {
+            parts.push(leaf.chars().take(budget as usize).collect());
+            break;
+        }
+        parts.push(leaf);
+        // Account for the joining space without materializing the full text first.
+        budget -= leaf_len + 1;
+    }
+    parts.join(" ").chars().take(max_chars).collect()
 }
 
 // --- script detection ------------------------------------------------------
