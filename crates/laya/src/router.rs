@@ -95,6 +95,13 @@ fn typed_decision_workflows() -> &'static [(&'static str, &'static [&'static str
 
 const ENGLISH_SUBTAGS: [&str; 3] = ["en", "eng", "english"];
 
+/// Codes that are valid `$LANG` values but name no language, so they say nothing about the state.
+/// `c`/`posix`/`c.utf-8` are what minimal images ship; the ISO 639-2 special codes `und`
+/// (undetermined), `zxx` (no linguistic content) and `mul` (multiple) say the same in the
+/// standard's own vocabulary. They abstain — like the blank case — instead of pinning English
+/// text to the multilingual checkpoint.
+const LANGUAGE_AGNOSTIC_CODES: [&str; 5] = ["c", "posix", "und", "zxx", "mul"];
+
 /// Python `repr()` of a string: single quotes unless the string contains a single (but not
 /// double) quote. Used so routing `reason` strings match the Python `%r` formatting exactly.
 fn py_repr(s: &str) -> String {
@@ -178,7 +185,7 @@ pub fn english_from_code(value: Option<&str>) -> Option<bool> {
     let code = code.split('.').next().unwrap_or(""); // en_US.UTF-8 -> en_US
     let primary = code.replace('_', "-");
     let primary = primary.split('-').next().unwrap_or(""); // en_US -> en
-    if primary.is_empty() {
+    if primary.is_empty() || LANGUAGE_AGNOSTIC_CODES.contains(&primary) {
         return None;
     }
     Some(ENGLISH_SUBTAGS.contains(&primary))
@@ -216,6 +223,7 @@ fn analysis_to_json(a: &Analysis) -> Value {
         "language_undecided": a.language_undecided,
         "diacritic_rate": a.diacritic_rate,
         "non_latin_fraction": a.non_latin_fraction,
+        "mixed_segment": a.mixed_segment,
     })
 }
 
@@ -425,7 +433,16 @@ impl Router {
                 ),
             )
         } else if !det.is_english {
-            let reason = if let Some(l) = &det.language {
+            let reason = if let Some(seg) = &det.mixed_segment {
+                // A mostly-English state whose own line/field reads as a non-English language:
+                // the part a question is about is not English even though the whole outvotes it.
+                let truncated: String = seg.chars().take(60).collect();
+                format!(
+                    "Latin script, mostly English, but a line or field reads as {} ({}); the English checkpoint cannot read it",
+                    py_repr(det.language.as_deref().unwrap_or("")),
+                    py_repr(&truncated)
+                )
+            } else if let Some(l) = &det.language {
                 format!(
                     "Latin script but language looks like {}, not English",
                     py_repr(l)
@@ -631,5 +648,60 @@ mod tests {
                 "blank lang {blank:?} must not route as explicit"
             );
         }
+    }
+
+    #[test]
+    fn language_agnostic_codes_abstain() {
+        // `$LANG` values that name no language must not pin routing to a checkpoint; they abstain
+        // like a blank code so detection decides (upstream #368).
+        for code in ["C", "posix", "und", "zxx", "mul", "C.UTF-8", "c_US"] {
+            assert_eq!(
+                english_from_code(Some(code)),
+                None,
+                "{code:?} should name no language"
+            );
+        }
+        // Real codes still resolve.
+        assert_eq!(english_from_code(Some("en")), Some(true));
+        assert_eq!(english_from_code(Some("de")), Some(false));
+    }
+
+    #[test]
+    fn lang_c_falls_through_to_detection() {
+        // An explicit `lang=C` names no language, so German text still routes multilingual.
+        let r = Router::with_defaults().unwrap();
+        let d = r
+            .route(
+                &de_state(),
+                None,
+                &RouteHints {
+                    lang: Some("C"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(d.model, "multilingual");
+        assert!(!d.reason.contains("explicit lang"));
+    }
+
+    #[test]
+    fn mixed_segment_routes_multilingual_with_reason() {
+        // A mostly-English state whose own field reads as Portuguese routes multilingual with the
+        // "mostly English, but a line or field reads as" reason (upstream #207).
+        let r = Router::with_defaults().unwrap();
+        let state = json!({
+            "customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
+            "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"
+        });
+        let d = r
+            .route(&state, Some(&Questions::new()), &RouteHints::default())
+            .unwrap();
+        assert_eq!(d.model, "multilingual");
+        assert_eq!(
+            d.reason,
+            "Latin script, mostly English, but a line or field reads as 'pt' \
+             ('Eu preciso de ajuda com a minha conta pois fui cobrado duas '); \
+             the English checkpoint cannot read it"
+        );
     }
 }

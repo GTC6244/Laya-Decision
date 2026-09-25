@@ -36,6 +36,13 @@ fn lang_parity() {
         if det.language != want_lang {
             errs.push(format!("language {:?} != {:?}", det.language, want_lang));
         }
+        let want_mixed = case["mixed_segment"].as_str().map(|s| s.to_string());
+        if det.mixed_segment != want_mixed {
+            errs.push(format!(
+                "mixed_segment {:?} != {:?}",
+                det.mixed_segment, want_mixed
+            ));
+        }
         if det.is_english != case["is_english"].as_bool().unwrap() {
             errs.push(format!("is_english {}", det.is_english));
         }

@@ -346,7 +346,10 @@ fn word_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"[^\W\d_]+").unwrap())
 }
 
-// A token whose dot or @ joins word characters is an identifier, not prose.
+// A token whose dot or @ joins word characters is an identifier, not prose. Upstream added a
+// `(?<![\w-])` look-behind for a ReDoS fix; the `regex` crate is already linear-time and lacks
+// look-behind, and the look-behind removes no match (a leftmost match can only begin at a run
+// start, since `[\w-]` and `[.@]` are disjoint), so the match set here is identical.
 fn identifier_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"[\w-]*(?:[.@][\w-]+)+").unwrap())
@@ -677,6 +680,109 @@ pub fn guess_latin_language(text: &str) -> Option<String> {
     latin_profile(text).language
 }
 
+// --- mixed-language segment detection --------------------------------------
+
+// A line carrying code syntax — `=`, `;`, braces, brackets or a call `name(` — is skipped, so a
+// program pasted into an English request does not count as a foreign segment (`os.path`,
+// `round(el, 2)`, `non_english` all read as function words when split into tokens).
+fn code_line_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"[=;{}\[\]]|\w\(").unwrap())
+}
+
+// A whitespace token holding a letter/digit, a joiner (`.`, `_`, `/`, `\`) and another
+// letter/digit is an identifier or slash/dot compound (`Nav/Com`, `OS/2`, `C:\DOS`) and is
+// dropped whole. Fixed length on purpose: an open-ended form backtracks quadratically.
+fn joined_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"[^\W_][._/\\][^\W_]").unwrap())
+}
+
+// A run of two or more letters. An all-caps run inside mixed-case text is an acronym or code
+// (`MON`, `EST`, `COM`), not a foreign word, and is blanked; a fully capitalised segment keeps
+// its words (a customer shouting in Portuguese is still Portuguese).
+fn letter_run_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"[^\W\d_]{2,}").unwrap())
+}
+
+/// Python `str.isupper()` for a run of cased letters: at least one cased character and no
+/// lowercase one. (The runs here are letters-only, so every character is cased.)
+fn is_all_upper(s: &str) -> bool {
+    let mut has_cased = false;
+    for c in s.chars() {
+        if c.is_lowercase() {
+            return false;
+        }
+        if c.is_uppercase() {
+            has_cased = true;
+        }
+    }
+    has_cased
+}
+
+/// First line or field that, read on its own, is named a non-English language, else `None`.
+///
+/// Returns `(language, segment)`. A segment needs the evidence a whole state needs — at least four
+/// words and a language named by [`latin_profile`] — and, because one line carries far less text,
+/// two things more: the words that name the language must be two *different* ones, and acronyms
+/// and slash compounds are not words. Reads at most `max_chars` characters in all. Mirrors
+/// `_non_english_segment` in `laya/lang.py`.
+fn non_english_segment(state: &Value, max_chars: usize) -> Option<(String, String)> {
+    let mut leaves: Vec<String> = Vec::new();
+    iter_text(state, 0, &mut leaves);
+    let stop = stop();
+    let mut seen = 0usize;
+    for leaf in &leaves {
+        for seg in leaf.split('\n') {
+            if seen >= max_chars {
+                return None;
+            }
+            let seg: String = seg.chars().take(max_chars - seen).collect();
+            seen += seg.chars().count();
+            if code_line_re().is_match(&seg) {
+                continue;
+            }
+            let joined = joined_re();
+            let prose = seg
+                .split_whitespace()
+                .filter(|tok| !joined.is_match(tok))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let prose = if prose.chars().any(|c| c.is_lowercase()) {
+                letter_run_re()
+                    .replace_all(&prose, |caps: &regex::Captures| {
+                        let m = &caps[0];
+                        if is_all_upper(m) {
+                            " ".to_string()
+                        } else {
+                            m.to_string()
+                        }
+                    })
+                    .into_owned()
+            } else {
+                prose
+            };
+            let tokens: Vec<&str> = word_re().find_iter(&prose).map(|m| m.as_str()).collect();
+            if tokens.len() < 4 {
+                continue;
+            }
+            let lang = match latin_profile(&prose).language {
+                Some(l) if l != "en" => l,
+                _ => continue,
+            };
+            if let Some(sw) = stop.get(lang.as_str()) {
+                let lowered: HashSet<String> = tokens.iter().map(|w| w.to_lowercase()).collect();
+                let hits = lowered.iter().filter(|w| sw.contains(w.as_str())).count();
+                if hits >= 2 {
+                    return Some((lang, seg.trim().to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
 // --- top-level analysis ----------------------------------------------------
 
 /// Result of [`analyse`]. Field names/semantics mirror the Python dict keys.
@@ -689,6 +795,8 @@ pub struct Analysis {
     pub language_undecided: bool,
     pub diacritic_rate: f64,
     pub non_latin_fraction: f64,
+    /// The line or field that made a mostly-English state non-English, else `None`.
+    pub mixed_segment: Option<String>,
 }
 
 pub fn analyse(state: &Value) -> Analysis {
@@ -735,6 +843,7 @@ pub fn analyse(state: &Value) -> Analysis {
             language_undecided: true,
             diacritic_rate: 0.0,
             non_latin_fraction: 0.0,
+            mixed_segment: None,
         };
     }
     if script != "latin" {
@@ -746,13 +855,29 @@ pub fn analyse(state: &Value) -> Analysis {
             language_undecided: true,
             diacritic_rate: 0.0,
             non_latin_fraction: non_latin,
+            mixed_segment: None,
         };
     }
 
     let prof_lat = latin_profile(&text);
-    let lang = prof_lat.language.clone();
-    let undecided = lang.is_none();
-    let english = lang.as_deref() == Some("en") || (undecided && !prof_lat.looks_non_english);
+    let mut lang = prof_lat.language.clone();
+    let mut undecided = lang.is_none();
+    let mut english = lang.as_deref() == Some("en") || (undecided && !prof_lat.looks_non_english);
+    // A mostly-English state can hide a customer's non-English line behind a longer English stack
+    // trace or form template. The whole reads as English, but the English checkpoint cannot read
+    // the customer's part, so a state that would go to English is checked line by line and field
+    // by field. A single line has no other part to outvote it and was just read whole.
+    let mut mixed: Option<String> = None;
+    let mut leaves: Vec<String> = Vec::new();
+    iter_text(state, 0, &mut leaves);
+    if english && (leaves.len() > 1 || leaves.iter().any(|l| l.contains('\n'))) {
+        if let Some((seg_lang, seg)) = non_english_segment(state, 4000) {
+            lang = Some(seg_lang);
+            mixed = Some(seg);
+            english = false;
+            undecided = false;
+        }
+    }
     Analysis {
         script: "latin".to_string(),
         script_profile: prof,
@@ -761,6 +886,7 @@ pub fn analyse(state: &Value) -> Analysis {
         language_undecided: undecided,
         diacritic_rate: round4(prof_lat.diacritic_rate),
         non_latin_fraction: non_latin,
+        mixed_segment: mixed,
     }
 }
 
@@ -862,5 +988,41 @@ mod tests {
     fn round4_is_half_to_even() {
         assert_eq!(round_half_even(2.5), 2.0);
         assert_eq!(round_half_even(3.5), 4.0);
+    }
+
+    #[test]
+    fn mixed_field_makes_state_non_english() {
+        // A mostly-English state (the English log is longer) whose own field reads as Portuguese
+        // must not go to the English checkpoint (upstream #207).
+        let state = json!({
+            "customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
+            "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"
+        });
+        let a = analyse(&state);
+        assert_eq!(a.language.as_deref(), Some("pt"));
+        assert!(!a.is_english);
+        assert_eq!(
+            a.mixed_segment.as_deref(),
+            Some("Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes")
+        );
+    }
+
+    #[test]
+    fn mixed_segment_ignores_code_lines() {
+        // A pasted stack trace reads as function words when split (`os.path`, `round(el, 2)`,
+        // `non_english`); a line carrying code syntax must not count as a foreign segment.
+        let a = analyse(&s(
+            "Please refund the duplicate charge on my account.\nTraceback: os.path failed in round(el, 2) at non_english line 42 of the payment module during the retry",
+        ));
+        assert!(a.is_english);
+        assert_eq!(a.language.as_deref(), Some("en"));
+        assert_eq!(a.mixed_segment, None);
+    }
+
+    #[test]
+    fn single_line_never_reports_mixed_segment() {
+        // A single line has no other part to be outvoted by, so it is judged whole, never split.
+        let a = analyse(&s("Please refund the duplicate charge on my account today"));
+        assert_eq!(a.mixed_segment, None);
     }
 }

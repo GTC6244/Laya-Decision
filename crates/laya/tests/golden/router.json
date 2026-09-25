@@ -57,5 +57,13 @@
     },
     "model": "multilingual",
     "reason": "Latin script but language looks like 'pt', not English"
+  },
+  {
+    "input": {
+      "customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
+      "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"
+    },
+    "model": "multilingual",
+    "reason": "Latin script, mostly English, but a line or field reads as 'pt' ('Eu preciso de ajuda com a minha conta pois fui cobrado duas '); the English checkpoint cannot read it"
   }
 ]

@@ -505,6 +505,14 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
                     qid
                 )));
             }
+            // A null level would silently drop that description; reject it and name the index so
+            // every level gets described, index 0 first (upstream: reject a null score level).
+            if let Some(idx) = arr.iter().position(|v| v.is_null()) {
+                return Err(LayaError::InvalidQuestion(format!(
+                    "question {:?}: score level {} is null; give every level a description, index 0 first",
+                    qid, idx
+                )));
+            }
         }
         QType::Noul => {
             if let Some(c) = crit {
@@ -672,4 +680,24 @@ fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
         encoder_config,
         tokenizer,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_null_score_level() {
+        // A null level would silently drop that description; it must be rejected, naming the index.
+        let q = json!({"type": "score", "instructions": "rate severity",
+                       "criteria": ["low", null, "high"]});
+        let msg = check_question("severity", &q).unwrap_err().to_string();
+        assert!(msg.contains("score level 1 is null"), "got: {msg}");
+    }
+
+    #[test]
+    fn accepts_fully_described_score_levels() {
+        let q = json!({"type": "score", "instructions": "rate", "criteria": ["low", "high"]});
+        assert!(check_question("s", &q).is_ok());
+    }
 }
