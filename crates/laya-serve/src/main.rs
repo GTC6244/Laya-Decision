@@ -20,6 +20,7 @@ use std::sync::Arc;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router as AxumRouter,
 };
@@ -140,7 +141,7 @@ async fn systemone(
     State(app): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Response, (StatusCode, Json<Value>)> {
     // Optional bearer auth. Compared in constant time over raw bytes so no header a client can
     // send leaks the token by timing or crashes the comparison.
     if let Some(key) = &app.api_key {
@@ -204,6 +205,8 @@ async fn systemone(
     }
 
     let model = resolve_model(obj.get("model").and_then(|v| v.as_str()));
+    // Kept for the server-side log below: `model` itself is moved into the blocking task.
+    let model_log = model.clone();
 
     let router = app.router.clone();
     // One forward pass at a time: hold a permit across the blocking inference.
@@ -213,6 +216,7 @@ async fn systemone(
         .acquire_owned()
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    let t0 = std::time::Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let hints = RouteHints {
@@ -224,17 +228,38 @@ async fn systemone(
             .map(|r| r.to_json())
     })
     .await;
+    let infer_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     match result {
-        Ok(Ok(v)) => Ok(Json(v)),
+        Ok(Ok(v)) => {
+            // Expose the inference time the same way upstream `laya-serve` does, so a client can
+            // read it without a separate timing endpoint.
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "server-timing",
+                format!("inference;dur={infer_ms:.2}").parse().unwrap(),
+            );
+            headers.insert(
+                "x-inference-time-ms",
+                format!("{infer_ms:.2}").parse().unwrap(),
+            );
+            Ok((headers, Json(v)).into_response())
+        }
         // Question-validation errors name the question and what to fix: safe to return.
         Ok(Err(e @ LayaError::InvalidQuestion(_))) => {
             Err(err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()))
         }
         // Anything else (download, tokenizer, model, OOM) may carry paths or weights details;
-        // never leak it to clients.
-        Ok(Err(_)) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed")),
-        Err(_) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed")),
+        // never leak it to clients — but log it server-side, the only place the actual cause can
+        // appear once the client sees a fixed 500.
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, model = ?model_log, "inference failed");
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed"))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, model = ?model_log, "inference task panicked");
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "inference failed"))
+        }
     }
 }
 

@@ -29,7 +29,7 @@ tablet|outlook|yahoo|mail|e-?mail|gmail|windows";
 /// Compiled regexes, matching the module-level `re.compile(...)` constants in `email.py`.
 struct Regexes {
     /// `_QUOTE_HEADERS` entries WITHOUT a look-ahead (`On … wrote:`, the `----` / `____` rules,
-    /// `From:` and `De: …[@<]`). The `Em`/`El` look-ahead entries are handled separately below.
+    /// and `From: …[@<]` / `De: …[@<]`). The `Em`/`El` look-ahead entries are handled below.
     quote_plain: Vec<Regex>,
     /// `_QUOTE_HEADERS[1]`: base pattern for `Em … escreveu:` (digit checked separately).
     qh_em: Regex,
@@ -67,7 +67,11 @@ fn regexes() -> &'static Regexes {
                 )
                 .unwrap(),
                 Regex::new(r"^\s*_{8,}\s*$").unwrap(),
-                Regex::new(r"(?i)^\s*From:\s.+$").unwrap(),
+                // `From:` opens ordinary prose too ("From: my side the integration works, but
+                // please refund..."), and a reply header always carries the sender, so the header
+                // is only recognised when an address follows — the same rule as `De:` below. A bare
+                // `From: Name` header is caught by `header_from_name`/`header_next` instead.
+                Regex::new(r"(?i)^\s*From:\s.*[@<]").unwrap(),
                 Regex::new(r"(?i)^\s*De:\s.*[@<]").unwrap(),
             ],
             qh_em: Regex::new(r"(?i)^\s*Em .{0,300}escreveu:\s*$").unwrap(),
@@ -78,9 +82,14 @@ fn regexes() -> &'static Regexes {
             )
             .unwrap(),
             attribution_head: Regex::new(r"(?i)^\s*(On|Em|El) ").unwrap(),
-            header_from_name: Regex::new(r"(?i)^\s*De:\s+\S").unwrap(),
-            header_next: Regex::new(r"(?i)^\s*(Enviad[oa]( em| el)?:\s|(Data|Fecha):\s.*\d{4})")
-                .unwrap(),
+            // A bare `De: Maria Souza` / `From: Maria Souza` header (no address) only cuts when the
+            // header's own `Enviado:`/`Sent:` line, or a dated `Data:`/`Fecha:`/`Date:` line,
+            // follows it — otherwise it reads as ordinary prose.
+            header_from_name: Regex::new(r"(?i)^\s*(De|From):\s+\S").unwrap(),
+            header_next: Regex::new(
+                r"(?i)^\s*(Enviad[oa]( em| el)?:\s|Sent:\s|(Data|Fecha|Date):\s.*\d{4})",
+            )
+            .unwrap(),
             signature_markers: vec![
                 Regex::new(r"^\s*--\s*$").unwrap(),
                 // English closing: closing word (case-insensitive, scoped) + optional extension +
@@ -404,6 +413,27 @@ mod tests {
         assert_eq!(state["from"], json!("a@b.com"));
         assert_eq!(state["priority"], json!("high"));
         assert!(state.get("skip").is_none());
+    }
+
+    #[test]
+    fn from_opening_prose_is_kept() {
+        // `From:` opens ordinary prose too; without an address it is not a reply header.
+        let out = clean_email_body(
+            "From: my side the whole integration works, but I was charged twice and need a refund please.",
+        );
+        assert!(out.contains("From: my side"));
+        assert!(out.contains("need a refund"));
+    }
+
+    #[test]
+    fn from_name_header_with_sent_line_cuts() {
+        // A bare `From: Name` header (no address) followed by a `Sent:` line IS a reply header.
+        let out = clean_email_body(
+            "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+        );
+        assert!(out.contains("I need a refund"));
+        assert!(!out.contains("Maria Souza"));
+        assert!(!out.contains("Old quoted"));
     }
 
     #[test]

@@ -53,6 +53,10 @@ LANG_INPUTS = [
     "Обвинение предъявлено вчера в суде Москвы",
     "混合 text with English brand names like Apple",
     "Türkçe metin çok güzel ve ilginç bir dil",
+    # Mixed: a mostly-English state whose own line reads as a non-English language (upstream #207).
+    "Je voudrais annuler mon abonnement car je ne suis pas satisfait du service.\nThe subscription management page keeps throwing an error whenever I click the cancel button and nothing happens after several tries on different browsers and devices today",
+    # A pasted stack trace with code syntax must NOT count as a foreign segment: stays English.
+    "Please refund the duplicate charge on my account.\nTraceback: os.path failed in round(el, 2) at non_english line 42 of the payment module during the retry",
 ]
 
 EMAIL_INPUTS = [
@@ -66,6 +70,10 @@ EMAIL_INPUTS = [
     "Ola, quero cancelar.\n\nEm 10/09/2024, Fulano <fulano@x.com> escreveu:\n> mensagem antiga",
     "Report the bug.\n\n-----Original Message-----\nFrom: someone\nSent: yesterday",
     "Body line one.\nBody line two.\n\n--\nSignature Block\nCompany Name",
+    # `From:` opening ordinary prose (no address) must not be treated as a reply header.
+    "From: my side the whole integration works, but I was charged twice and need a refund please.",
+    # A bare `From: Name` header followed by a `Sent:` line IS a reply header and cuts.
+    "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
 ]
 
 ROUTER_INPUTS = [
@@ -79,6 +87,10 @@ ROUTER_INPUTS = [
     "Меня дважды списали деньги",
     "The quick brown fox jumps over the lazy dog",
     {"ticket": "Deu erro 500 no endpoint depois do update"},
+    # Mostly-English state, but the customer's own field reads as Portuguese (upstream #207):
+    # routes to multilingual with the "mostly English, but a line or field reads as" reason.
+    {"customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
+     "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"},
 ]
 
 
@@ -94,6 +106,7 @@ def dump_lang():
             "language_undecided": det["language_undecided"],
             "diacritic_rate": det["diacritic_rate"],
             "non_latin_fraction": det["non_latin_fraction"],
+            "mixed_segment": det["mixed_segment"],
         })
     return rows
 

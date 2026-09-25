@@ -38,5 +38,13 @@
   {
     "input": "Body line one.\nBody line two.\n\n--\nSignature Block\nCompany Name",
     "output": "Body line one.\nBody line two."
+  },
+  {
+    "input": "From: my side the whole integration works, but I was charged twice and need a refund please.",
+    "output": "From: my side the whole integration works, but I was charged twice and need a refund please."
+  },
+  {
+    "input": "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+    "output": "I need a refund for the duplicate charge."
   }
 ]
