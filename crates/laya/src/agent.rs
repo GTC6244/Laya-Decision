@@ -488,6 +488,28 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
                     qid
                 )));
             }
+            // A list label is used as the answer key when a list of labels is normalised (a dict's
+            // keys are already strings), so a nested array/object label has no meaning here — it is
+            // rendered as option text. Reject it as a named caller error (a 422 over HTTP, not the
+            // opaque 500 an inscrutable failure three frames down would become) (upstream #425).
+            if let Some(Value::Array(a)) = crit {
+                if let Some(i) = a
+                    .iter()
+                    .position(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+                {
+                    // "array" and "object" both start with a vowel → "an".
+                    let kind = if a[i].is_array() { "array" } else { "object" };
+                    return Err(LayaError::InvalidQuestion(format!(
+                        "question {:?}: choice label {} is an {}; a label is rendered as option \
+                         text and used as the answer key, so it must be a scalar (a string, number \
+                         or null), got {}",
+                        qid,
+                        i,
+                        kind,
+                        crate::common::py_json(&a[i])
+                    )));
+                }
+            }
         }
         QType::Score => {
             let arr = match crit {
@@ -699,5 +721,25 @@ mod tests {
     fn accepts_fully_described_score_levels() {
         let q = json!({"type": "score", "instructions": "rate", "criteria": ["low", "high"]});
         assert!(check_question("s", &q).is_ok());
+    }
+
+    #[test]
+    fn rejects_nested_choice_label() {
+        // A nested array/object label is a named caller error, not an opaque failure (#425).
+        let q = json!({"type": "choice", "instructions": "pick",
+                       "criteria": ["fraud", ["nested", "label"]]});
+        let msg = check_question("kind", &q).unwrap_err().to_string();
+        assert!(msg.contains("choice label 1 is an array"), "got: {msg}");
+
+        let q = json!({"type": "choice", "instructions": "pick",
+                       "criteria": ["ok", {"bad": "label"}]});
+        let msg = check_question("kind", &q).unwrap_err().to_string();
+        assert!(msg.contains("choice label 1 is an object"), "got: {msg}");
+    }
+
+    #[test]
+    fn accepts_scalar_choice_labels() {
+        let q = json!({"type": "choice", "instructions": "pick", "criteria": ["a", "b", 3, null]});
+        assert!(check_question("k", &q).is_ok());
     }
 }

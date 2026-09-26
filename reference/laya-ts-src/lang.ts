@@ -101,14 +101,15 @@ const STOP: Record<string, Set<string>> = {
 };
 
 const NON_EN_DIACRITICS = new Set(
-  ("àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœ" +
-    "ăâîșțşţ" +
-    "ąćęłńśźż" +
-    "čďěňřšťůž" +
-    "őű" +
-    "ğı" +
-    "āēģīķļņūž" +
-    "đ").split(""),
+  ("àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœ" +   // Western European
+    "ăâîșțşţ" +                            // Romanian
+    "ąćęłńśźż" +                           // Polish
+    "čďěňřšťůž" +                          // Czech / Slovak
+    "őű" +                                 // Hungarian
+    "ğı" +                                 // Turkish (text is lowercased before matching)
+    "āēģīķļņūž" +                          // Baltic
+    "đ" +                                  // Serbo-Croatian / Vietnamese
+    "ə").split(""),                        // Azerbaijani
 );
 
 export const NON_EN_DIACRITIC_RATE = 0.02;
@@ -123,7 +124,8 @@ const SHARED_WORDS: Set<string> = (() => {
   return out;
 })();
 
-const WORD_RE = /[^\W\d_]+/gu;
+// JS `\w` is ASCII-only, so Python's `[^\W\d_]` needs the Unicode classes spelled out (Nl/No are in Python's `\w`).
+const WORD_RE = /[\p{L}\p{Nl}\p{No}]+/gu;
 // Lookbehind for the same reason as the Python side (see laya/lang.py): without it the
 // greedy prefix is retried at every offset inside a run of word characters, which is
 // quadratic in the run's length -- 50 000 characters of one token took 1540 ms here.
@@ -149,16 +151,32 @@ function scriptOf(ch: string): string | null {
   return null;
 }
 
+/** String leaves of a state. Keys are ignored: they are usually English field names. */
+function iterText(state: unknown, depth = 0): string[] {
+  if (depth > 6 || state == null) return [];
+  if (typeof state === "string") return [state];
+  if (state instanceof Uint8Array) {
+    try {
+      return [new TextDecoder("utf-8", { fatal: true }).decode(state)];
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(state)) {
+    const out: string[] = [];
+    for (const v of state) out.push(...iterText(v, depth + 1));
+    return out;
+  }
+  if (typeof state === "object") {
+    const out: string[] = [];
+    for (const v of Object.values(state as object)) out.push(...iterText(v, depth + 1));
+    return out;
+  }
+  return [];
+}
+
 export function stateText(state: unknown, maxChars = 4000): string {
-  const parts: string[] = [];
-  const walk = (v: unknown, d: number): void => {
-    if (d > 6 || v == null) return;
-    if (typeof v === "string") { parts.push(v); return; }
-    if (Array.isArray(v)) { for (const x of v) walk(x, d + 1); return; }
-    if (typeof v === "object") { for (const x of Object.values(v as object)) walk(x, d + 1); }
-  };
-  walk(state, 0);
-  return parts.join(" ").slice(0, maxChars);
+  return iterText(state).join(" ").slice(0, maxChars);
 }
 
 export function detectScript(text: string): string {
@@ -313,8 +331,7 @@ function round4(x: number): number {
   return Math.round(x * 10000) / 10000;
 }
 
-export function analyse(state: unknown): AnalyseResult {
-  const text = stateText(state);
+function analyseText(text: string): AnalyseResult {
   const prof = scriptProfile(text);
   let script = detectScript(text);
   const nonLatin = prof && Object.keys(prof).length ? round4(1.0 - (prof["latin"] ?? 0.0)) : 0.0;
@@ -360,6 +377,53 @@ export function analyse(state: unknown): AnalyseResult {
     diacriticRate: round4(profLat.diacriticRate),
     nonLatinFraction: nonLatin,
   };
+}
+
+function alphaCount(text: string): number {
+  let n = 0;
+  for (const ch of text) if (IS_ALPHA_RE.test(ch)) n += 1;
+  return n;
+}
+
+/** A string value that is itself not safe for the English checkpoint, else null. */
+function leafNonEnglish(leaf: string): AnalyseResult | null {
+  const sample = leaf.slice(0, 4000);
+  if (!sample.trim()) return null;
+  const det = analyseText(sample);
+  if (det.isEnglish) return null;
+  if (det.language !== null && det.language !== "en") return det;
+  const nAlpha = alphaCount(sample);
+  if (det.script !== "latin" && det.script !== "unknown") {
+    if (nonLatinWords(sample).length > 0 && nAlpha >= NON_LATIN_MIN_LETTERS) return det;
+    return null;
+  }
+  const words = sample.match(WORD_RE) ?? [];
+  if (det.languageUndecided && det.diacriticRate >= NON_EN_DIACRITIC_RATE && words.length >= 4) {
+    return det;
+  }
+  return null;
+}
+
+export function analyse(state: unknown): AnalyseResult {
+  // One non-English string value is enough. Joining every value let a long English
+  // note fill the window, or outvote a short German message, and that message was
+  // then sent to the English checkpoint.
+  const result = analyseText(stateText(state));
+  if (typeof state === "string" || state == null || state instanceof Uint8Array || !result.isEnglish) {
+    return result;
+  }
+  let best: AnalyseResult | null = null;
+  let bestN = -1;
+  for (const leaf of iterText(state)) {
+    const det = leafNonEnglish(leaf);
+    if (!det) continue;
+    const n = alphaCount(leaf.slice(0, 4000));
+    if (n > bestN) {
+      bestN = n;
+      best = det;
+    }
+  }
+  return best ?? result;
 }
 
 export function isEnglish(state: unknown): boolean {

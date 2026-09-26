@@ -76,6 +76,46 @@ fn lang_parity() {
 }
 
 #[test]
+fn lang_structured_parity() {
+    // Detection over structured states (dict / list), covering the per-string-value scan (#384):
+    // a value the joined window and segment scan cannot reach is still read on its own.
+    let mut failures = Vec::new();
+    for case in golden("lang_structured.json") {
+        let state = case["input"].clone();
+        let det = analyse(&state);
+        let want_lang = case["language"].as_str().map(|s| s.to_string());
+        let want_mixed = case["mixed_segment"].as_str().map(|s| s.to_string());
+        let mut errs = Vec::new();
+        if det.script != case["script"].as_str().unwrap() {
+            errs.push(format!("script {} != {}", det.script, case["script"]));
+        }
+        if det.language != want_lang {
+            errs.push(format!("language {:?} != {:?}", det.language, want_lang));
+        }
+        if det.is_english != case["is_english"].as_bool().unwrap() {
+            errs.push(format!("is_english {}", det.is_english));
+        }
+        if det.language_undecided != case["language_undecided"].as_bool().unwrap() {
+            errs.push(format!("language_undecided {}", det.language_undecided));
+        }
+        if det.mixed_segment != want_mixed {
+            errs.push(format!(
+                "mixed_segment {:?} != {:?}",
+                det.mixed_segment, want_mixed
+            ));
+        }
+        if !errs.is_empty() {
+            failures.push(format!("input {}: {}", case["input"], errs.join("; ")));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "lang_structured parity failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
 fn router_parity() {
     let router = Router::with_defaults().unwrap();
     let empty = Questions::new();
