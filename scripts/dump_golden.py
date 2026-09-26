@@ -57,6 +57,35 @@ LANG_INPUTS = [
     "Je voudrais annuler mon abonnement car je ne suis pas satisfait du service.\nThe subscription management page keeps throwing an error whenever I click the cancel button and nothing happens after several tries on different browsers and devices today",
     # A pasted stack trace with code syntax must NOT count as a foreign segment: stays English.
     "Please refund the duplicate charge on my account.\nTraceback: os.path failed in round(el, 2) at non_english line 42 of the payment module during the retry",
+    # Loanword rescue (#337): one or two occurrences of a single accented loanword must NOT pull
+    # otherwise plain English off the English checkpoint.
+    "Please send me the invoice for my café order, I was charged twice and need a refund",
+    "I updated my résumé and the résumé looks good now for the new role today",
+    # But several distinct accented words are a non-English vocabulary: not rescued, stays undecided.
+    "the café serves a very naïve résumé of pâté dishes tonight",
+]
+
+# Structured states (dict / list), dumped with full detection. These exercise the per-string-value
+# scan (#384): a value the joined-window/segment scan cannot reach is still read on its own.
+_LONG_EN = ("The server returned an internal error and the request was retried many times "
+            "before it finally failed. " * 60).strip()
+LANG_STRUCTURED_INPUTS = [
+    # A short German field buried behind a >4000-char English note the segment scan never reaches.
+    {"note": _LONG_EN,
+     "msg": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe dabei bitte"},
+    # A full Japanese sentence buried behind the same long English note (a non-Latin script the
+    # segment scan does not name, and too small a fraction of the join to reclassify it).
+    {"note": _LONG_EN, "user": "私は二重に請求されましたので払い戻しをお願いします"},
+    # Two tokens of non-Latin script are too little evidence on their own: stays English.
+    {"note": _LONG_EN, "user": "二重"},
+    # A French field alongside a shorter English one is caught by the mixed-segment scan.
+    {"a": "The quick brown fox jumps over the lazy dog every single day of the week",
+     "b": "Je voudrais annuler mon abonnement car je ne suis pas content du service"},
+    # An all-English structured state stays English.
+    {"subject": "Refund request", "body": "I was charged twice, please refund the duplicate charge"},
+    # A list of values, one of which is a full non-English sentence.
+    ["everything works fine on my end here today thanks a lot",
+     "Ich moechte mein Konto kuendigen weil ich zweimal belastet wurde"],
 ]
 
 EMAIL_INPUTS = [
@@ -91,6 +120,13 @@ ROUTER_INPUTS = [
     # routes to multilingual with the "mostly English, but a line or field reads as" reason.
     {"customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
      "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"},
+    # A short non-English field buried behind a long English note (upstream #384): the per-value
+    # scan reaches it even though the joined window and the segment scan do not.
+    {"note": ("The server returned an internal error and the request was retried many times "
+              "before it finally failed. " * 60).strip(),
+     "msg": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe dabei bitte"},
+    # One accented loanword must not route plain English to multilingual (upstream #337).
+    "Please send me the invoice for my café order, I was charged twice and need a refund",
 ]
 
 
@@ -111,6 +147,21 @@ def dump_lang():
     return rows
 
 
+def dump_lang_structured():
+    rows = []
+    for state in LANG_STRUCTURED_INPUTS:
+        det = analyse(state)
+        rows.append({
+            "input": state,
+            "script": det["script"],
+            "language": det["language"],
+            "is_english": det["is_english"],
+            "language_undecided": det["language_undecided"],
+            "mixed_segment": det["mixed_segment"],
+        })
+    return rows
+
+
 def dump_email():
     return [{"input": b, "output": clean_email_body(b)} for b in EMAIL_INPUTS]
 
@@ -126,7 +177,8 @@ def dump_router():
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    for name, rows in (("lang", dump_lang()), ("email", dump_email()), ("router", dump_router())):
+    for name, rows in (("lang", dump_lang()), ("lang_structured", dump_lang_structured()),
+                       ("email", dump_email()), ("router", dump_router())):
         path = os.path.join(OUT, name + ".json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, indent=2)

@@ -68,6 +68,13 @@ const SCRIPT_RANGES: &[(&str, &[(u32, u32)])] = &[
 /// A diacritic rate above this is taken as evidence the text is not English.
 pub const NON_EN_DIACRITIC_RATE: f64 = 0.02;
 
+/// One accented loanword or proper noun (`café`, `résumé`, `José`) must not alone pull otherwise
+/// plain English off the English checkpoint: the rate is measured over every character, so a
+/// single `é` in a short sentence clears [`NON_EN_DIACRITIC_RATE`]. English function words keep
+/// their say only through the rescue below — two distinct words no other list holds, at most one
+/// non-English letter word, and a rate still well above this floor vetoes regardless (#337).
+pub const ENGLISH_RESCUE_DIACRITIC_RATE: f64 = 0.06;
+
 /// Non-Latin text is not for the English checkpoint even when Latin letters are the plurality.
 pub const NON_LATIN_FRACTION: f64 = 0.2;
 pub const NON_LATIN_MIN_FRACTION: f64 = 0.1;
@@ -341,6 +348,23 @@ fn shared_words() -> &'static HashSet<&'static str> {
     })
 }
 
+/// English function words no other list holds (`in`, `is`, `as`, `was` are shared with German,
+/// Dutch and Portuguese). They alone carry the English rescue of [`latin_profile`]. Mirrors
+/// `_EN_ONLY_WORDS = _STOP["en"] - _SHARED_WORDS`.
+fn en_only_words() -> &'static HashSet<&'static str> {
+    static S: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    S.get_or_init(|| {
+        let shared = shared_words();
+        stop()
+            .get("en")
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|w| !shared.contains(*w))
+            .collect()
+    })
+}
+
 fn word_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"[^\W\d_]+").unwrap())
@@ -595,6 +619,31 @@ pub struct LatinProfile {
     pub looks_non_english: bool,
 }
 
+/// Whether plain-English function words outvote a marginal diacritic rate (#337).
+///
+/// The rate is measured over every character, so one accented loanword or proper noun in a short
+/// sentence clears [`NON_EN_DIACRITIC_RATE`] outright. English still wins when it shows at least
+/// two distinct function words no other list holds and at most one word carrying a non-English
+/// letter: one loanword is not a non-English vocabulary, while the odd word a Danish or Swedish
+/// sentence picks up (`i`, `at`, `for`, `have`) is not an English sentence either. A rate well
+/// above [`ENGLISH_RESCUE_DIACRITIC_RATE`] vetoes regardless.
+fn english_rescued_by_words(words: &[&str], diac_rate: f64) -> bool {
+    if diac_rate >= ENGLISH_RESCUE_DIACRITIC_RATE {
+        return false;
+    }
+    let word_set: HashSet<&str> = words.iter().copied().collect();
+    let en_only = en_only_words();
+    if word_set.iter().filter(|w| en_only.contains(**w)).count() < 2 {
+        return false;
+    }
+    let diac = non_en_diacritics();
+    word_set
+        .iter()
+        .filter(|w| w.chars().any(|ch| diac.contains(&ch)))
+        .count()
+        <= 1
+}
+
 pub fn latin_profile(text: &str) -> LatinProfile {
     // Order matches Python: identifier-strip the ORIGINAL text, replace 'İ'->'i', lower, then findall.
     let stripped = identifier_re().replace_all(text, " ");
@@ -653,17 +702,20 @@ pub fn latin_profile(text: &str) -> LatinProfile {
         }
     }
 
+    // Mirrors the elif ladder in laya/lang.py. A non-English language needs a clear margin over
+    // English function words, or (with non-English letters present) at least a two-hit tie.
+    // Otherwise English wins when it has any hits and either no non-English letters or the
+    // loanword rescue holds (#337).
+    let rescued_en = en > 0 && (!non_english || english_rescued_by_words(&words, diac_rate));
     let mut language: Option<String> = None;
     if let Some(bl) = best_lg {
-        // A non-English language needs a clear margin over English function words, or (with
-        // non-English letters present) at least a two-hit tie. Mirrors the elif ladder in
-        // laya/lang.py, with the two "name best_lg" branches combined.
+        // A clear margin over English, or (with non-English letters) a two-hit tie, names best_lg.
         if best >= std::cmp::max(2, en + 2) || (non_english && best >= std::cmp::max(2, en)) {
             language = Some(bl.to_string());
-        } else if en > 0 && !non_english {
+        } else if rescued_en {
             language = Some("en".to_string());
         }
-    } else if en > 0 && !non_english {
+    } else if rescued_en {
         language = Some("en".to_string());
     }
 
@@ -721,6 +773,51 @@ fn is_all_upper(s: &str) -> bool {
     has_cased
 }
 
+/// Language code for one non-code line, or `None` when it does not name a foreign language.
+///
+/// Same evidence bar as [`non_english_segment`]: four words, a language [`latin_profile`] will
+/// name, and two *different* words of that language. Acronyms and slash compounds are not words.
+/// Mirrors `_named_prose_language` in `laya/lang.py`.
+fn named_prose_language(segment: &str) -> Option<String> {
+    if segment.trim().is_empty() || code_line_re().is_match(segment) {
+        return None;
+    }
+    let joined = joined_re();
+    let prose = segment
+        .split_whitespace()
+        .filter(|tok| !joined.is_match(tok))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let prose = if prose.chars().any(|c| c.is_lowercase()) {
+        letter_run_re()
+            .replace_all(&prose, |caps: &regex::Captures| {
+                let m = &caps[0];
+                if is_all_upper(m) {
+                    " ".to_string()
+                } else {
+                    m.to_string()
+                }
+            })
+            .into_owned()
+    } else {
+        prose
+    };
+    let tokens: Vec<&str> = word_re().find_iter(&prose).map(|m| m.as_str()).collect();
+    if tokens.len() < 4 {
+        return None;
+    }
+    let lang = match latin_profile(&prose).language {
+        Some(l) if l != "en" => l,
+        _ => return None,
+    };
+    let sw = stop().get(lang.as_str())?;
+    let lowered: HashSet<String> = tokens.iter().map(|w| w.to_lowercase()).collect();
+    if lowered.iter().filter(|w| sw.contains(w.as_str())).count() < 2 {
+        return None;
+    }
+    Some(lang)
+}
+
 /// First line or field that, read on its own, is named a non-English language, else `None`.
 ///
 /// Returns `(language, segment)`. A segment needs the evidence a whole state needs — at least four
@@ -731,7 +828,6 @@ fn is_all_upper(s: &str) -> bool {
 fn non_english_segment(state: &Value, max_chars: usize) -> Option<(String, String)> {
     let mut leaves: Vec<String> = Vec::new();
     iter_text(state, 0, &mut leaves);
-    let stop = stop();
     let mut seen = 0usize;
     for leaf in &leaves {
         for seg in leaf.split('\n') {
@@ -740,43 +836,8 @@ fn non_english_segment(state: &Value, max_chars: usize) -> Option<(String, Strin
             }
             let seg: String = seg.chars().take(max_chars - seen).collect();
             seen += seg.chars().count();
-            if code_line_re().is_match(&seg) {
-                continue;
-            }
-            let joined = joined_re();
-            let prose = seg
-                .split_whitespace()
-                .filter(|tok| !joined.is_match(tok))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let prose = if prose.chars().any(|c| c.is_lowercase()) {
-                letter_run_re()
-                    .replace_all(&prose, |caps: &regex::Captures| {
-                        let m = &caps[0];
-                        if is_all_upper(m) {
-                            " ".to_string()
-                        } else {
-                            m.to_string()
-                        }
-                    })
-                    .into_owned()
-            } else {
-                prose
-            };
-            let tokens: Vec<&str> = word_re().find_iter(&prose).map(|m| m.as_str()).collect();
-            if tokens.len() < 4 {
-                continue;
-            }
-            let lang = match latin_profile(&prose).language {
-                Some(l) if l != "en" => l,
-                _ => continue,
-            };
-            if let Some(sw) = stop.get(lang.as_str()) {
-                let lowered: HashSet<String> = tokens.iter().map(|w| w.to_lowercase()).collect();
-                let hits = lowered.iter().filter(|w| sw.contains(w.as_str())).count();
-                if hits >= 2 {
-                    return Some((lang, seg.trim().to_string()));
-                }
+            if let Some(lang) = named_prose_language(&seg) {
+                return Some((lang, seg.trim().to_string()));
             }
         }
     }
@@ -799,10 +860,12 @@ pub struct Analysis {
     pub mixed_segment: Option<String>,
 }
 
-pub fn analyse(state: &Value) -> Analysis {
-    let text = state_text(state, 4000);
-    let prof = script_profile(&text);
-    let mut script = detect_script(&text);
+/// Detection result for one already-flattened string. Does not look for a foreign line inside
+/// mostly-English text — [`analyse`] does that, because it needs the original state and not only
+/// the joined window. Mirrors `_analyse_text` in `laya/lang.py`.
+fn analyse_text(text: &str) -> Analysis {
+    let prof = script_profile(text);
+    let mut script = detect_script(text);
 
     let non_latin = if !prof.is_empty() {
         round4(1.0 - prof.get("latin").copied().unwrap_or(0.0))
@@ -813,7 +876,7 @@ pub fn analyse(state: &Value) -> Analysis {
     let n_non_latin = round_half_even(non_latin * sum_alpha) as i64;
 
     if script == "latin"
-        && !non_latin_words(&text).is_empty()
+        && !non_latin_words(text).is_empty()
         && (non_latin >= NON_LATIN_FRACTION
             || (non_latin >= NON_LATIN_MIN_FRACTION && n_non_latin >= NON_LATIN_MIN_LETTERS))
     {
@@ -859,25 +922,10 @@ pub fn analyse(state: &Value) -> Analysis {
         };
     }
 
-    let prof_lat = latin_profile(&text);
-    let mut lang = prof_lat.language.clone();
-    let mut undecided = lang.is_none();
-    let mut english = lang.as_deref() == Some("en") || (undecided && !prof_lat.looks_non_english);
-    // A mostly-English state can hide a customer's non-English line behind a longer English stack
-    // trace or form template. The whole reads as English, but the English checkpoint cannot read
-    // the customer's part, so a state that would go to English is checked line by line and field
-    // by field. A single line has no other part to outvote it and was just read whole.
-    let mut mixed: Option<String> = None;
-    let mut leaves: Vec<String> = Vec::new();
-    iter_text(state, 0, &mut leaves);
-    if english && (leaves.len() > 1 || leaves.iter().any(|l| l.contains('\n'))) {
-        if let Some((seg_lang, seg)) = non_english_segment(state, 4000) {
-            lang = Some(seg_lang);
-            mixed = Some(seg);
-            english = false;
-            undecided = false;
-        }
-    }
+    let prof_lat = latin_profile(text);
+    let lang = prof_lat.language.clone();
+    let undecided = lang.is_none();
+    let english = lang.as_deref() == Some("en") || (undecided && !prof_lat.looks_non_english);
     Analysis {
         script: "latin".to_string(),
         script_profile: prof,
@@ -886,8 +934,105 @@ pub fn analyse(state: &Value) -> Analysis {
         language_undecided: undecided,
         diacritic_rate: round4(prof_lat.diacritic_rate),
         non_latin_fraction: non_latin,
-        mixed_segment: mixed,
+        mixed_segment: None,
     }
+}
+
+/// A string value that is itself not safe for the English checkpoint, else `None`.
+///
+/// A one-word name ("José") and a capitalised non-Latin name stay out: the same rules
+/// [`latin_profile`] and [`non_latin_words`] already use, so a name field cannot pull an English
+/// ticket onto the multilingual checkpoint. Code lines, acronyms and slash compounds stay out too,
+/// matching [`non_english_segment`]. Each line is capped at 4000 characters; unlike the segment
+/// scan, a long earlier field does not consume the budget of the next one (#384). Mirrors
+/// `_leaf_non_english` in `laya/lang.py`.
+fn leaf_non_english(leaf: &str) -> Option<Analysis> {
+    let mut best_n: i64 = -1;
+    let mut best: Option<Analysis> = None;
+    for line in leaf.split('\n') {
+        let sample: String = line.chars().take(4000).collect();
+        if sample.trim().is_empty() || code_line_re().is_match(&sample) {
+            continue;
+        }
+        let det = analyse_text(&sample);
+        if det.is_english {
+            continue;
+        }
+        let lang_named = det.language.as_deref().map(|l| l != "en").unwrap_or(false);
+        if lang_named {
+            if named_prose_language(&sample).is_none() {
+                continue;
+            }
+        } else if det.script != "latin" && det.script != "unknown" {
+            let n_alpha = sample.chars().filter(|c| c.is_alphabetic()).count() as i64;
+            if non_latin_words(&sample).is_empty() || n_alpha < NON_LATIN_MIN_LETTERS {
+                continue;
+            }
+        } else {
+            let n_words = word_re().find_iter(&sample).count();
+            if !(det.language_undecided
+                && det.diacritic_rate >= NON_EN_DIACRITIC_RATE
+                && n_words >= 4)
+            {
+                continue;
+            }
+        }
+        let n_alpha = sample.chars().filter(|c| c.is_alphabetic()).count() as i64;
+        if n_alpha > best_n {
+            best_n = n_alpha;
+            best = Some(det);
+        }
+    }
+    best
+}
+
+pub fn analyse(state: &Value) -> Analysis {
+    let mut result = analyse_text(&state_text(state, 4000));
+    // A mostly-English state can hide a customer's non-English line behind a longer English stack
+    // trace or form template. The whole reads as English, but the English checkpoint cannot read
+    // the customer's part, so a state that would go to English is checked line by line and field
+    // by field. A single line has no other part to outvote it and was just read whole (#207).
+    if result.script == "latin" && result.is_english {
+        let mut leaves: Vec<String> = Vec::new();
+        iter_text(state, 0, &mut leaves);
+        if leaves.len() > 1 || leaves.iter().any(|l| l.contains('\n')) {
+            if let Some((seg_lang, seg)) = non_english_segment(state, 4000) {
+                result.language = Some(seg_lang);
+                result.is_english = false;
+                result.language_undecided = false;
+                result.mixed_segment = Some(seg);
+            }
+        }
+    }
+    // A plain string was just read whole. A structured state can still hide a message past the
+    // segment cap, or in a script `latin_profile` does not name, so each string value is read on
+    // its own; one non-English value is enough (#384).
+    if matches!(state, Value::String(_) | Value::Null) || !result.is_english {
+        return result;
+    }
+    let mut leaves: Vec<String> = Vec::new();
+    iter_text(state, 0, &mut leaves);
+    let mut best_n: i64 = -1;
+    let mut best: Option<Analysis> = None;
+    for leaf in &leaves {
+        if let Some(det) = leaf_non_english(leaf) {
+            let n_alpha = leaf
+                .chars()
+                .take(4000)
+                .filter(|c| c.is_alphabetic())
+                .count() as i64;
+            if n_alpha > best_n {
+                best_n = n_alpha;
+                best = Some(det);
+            }
+        }
+    }
+    if let Some(b) = best {
+        result.language = b.language;
+        result.is_english = false;
+        result.language_undecided = b.language_undecided;
+    }
+    result
 }
 
 /// True when the English checkpoint can be expected to read this state.
@@ -1017,6 +1162,65 @@ mod tests {
         assert!(a.is_english);
         assert_eq!(a.language.as_deref(), Some("en"));
         assert_eq!(a.mixed_segment, None);
+    }
+
+    #[test]
+    fn one_loanword_stays_english() {
+        // One accented loanword or proper noun must not pull otherwise plain English off the
+        // English checkpoint (#337).
+        let a = analyse(&s(
+            "Please send me the invoice for my café order, I was charged twice and need a refund",
+        ));
+        assert_eq!(a.language.as_deref(), Some("en"));
+        assert!(a.is_english);
+    }
+
+    #[test]
+    fn several_accented_words_are_not_rescued() {
+        // A vocabulary of distinct accented words is not one loanword: not rescued.
+        let a = analyse(&s(
+            "the café serves a very naïve résumé of pâté dishes tonight",
+        ));
+        assert_eq!(a.language, None);
+        assert!(!a.is_english);
+    }
+
+    #[test]
+    fn buried_field_detected_per_value() {
+        // A short German field behind an English note too long for the segment scan to reach is
+        // still read on its own (#384). No mixed_segment: the per-value scan sets it, not the scan.
+        let long_en = "The server returned an internal error and the request was retried many times before it finally failed. ".repeat(60);
+        let state = json!({
+            "note": long_en.trim(),
+            "msg": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe dabei bitte"
+        });
+        let a = analyse(&state);
+        assert_eq!(a.language.as_deref(), Some("de"));
+        assert!(!a.is_english);
+        assert_eq!(a.mixed_segment, None);
+    }
+
+    #[test]
+    fn buried_non_latin_field_detected_per_value() {
+        // A full non-Latin sentence buried behind a long English note (too small a fraction of the
+        // join to reclassify, a script the segment scan does not name) is still caught (#384).
+        let long_en = "The server returned an internal error and the request was retried many times before it finally failed. ".repeat(60);
+        let state = json!({
+            "note": long_en.trim(),
+            "user": "私は二重に請求されましたので払い戻しをお願いします"
+        });
+        let a = analyse(&state);
+        assert!(!a.is_english);
+        assert_eq!(a.language, None);
+        assert!(a.language_undecided);
+    }
+
+    #[test]
+    fn tiny_non_latin_field_stays_english() {
+        // Two tokens of non-Latin script are too little evidence to reroute an English state.
+        let long_en = "The server returned an internal error and the request was retried many times before it finally failed. ".repeat(60);
+        let state = json!({"note": long_en.trim(), "user": "二重"});
+        assert!(is_english(&state));
     }
 
     #[test]

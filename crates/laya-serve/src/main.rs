@@ -13,6 +13,7 @@
 //! | `LAYA_MODELS`    | comma list to preload (english,multilingual,typed-decisions) | (all) |
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
+//! | `LAYA_MAX_CONCURRENT` | requests admitted past auth at once; excess gets 503 | 16 |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,6 +39,17 @@ const KNOWN_MODELS: [&str; 3] = ["english", "multilingual", "typed-decisions"];
 const MAX_QUESTIONS: usize = 64;
 const MAX_STATE_CHARS: usize = 50_000;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+// HTTP-only amplification guard; the library keeps its head_max_len-aware budget. A single request
+// with thousands of options tokenizes and collates into one large tensor, so cap the option counts
+// per question and across a request. Mirrors upstream `laya/serve.py` (#... option budgets).
+const MAX_CHOICE_OPTIONS: usize = 100;
+const MAX_SCORE_LEVELS: usize = 32;
+const MAX_TOTAL_OPTIONS: usize = 512;
+
+// Cap on requests admitted past auth at once. Each can buffer up to MAX_BODY_BYTES, so without a
+// bound many concurrent near-cap requests OOM the worker even though each is individually valid;
+// excess is refused with 503 rather than queued (upstream #330). Override with LAYA_MAX_CONCURRENT.
+const DEFAULT_MAX_CONCURRENT: usize = 16;
 
 /// Constant-time byte comparison, so bearer-token checks do not leak the token by timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -55,8 +67,20 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 struct AppState {
     router: Arc<Router>,
     gate: Arc<Semaphore>,
+    admission: Arc<Semaphore>,
     api_key: Option<String>,
     device: String,
+}
+
+/// Bound on requests admitted past auth at once, from `LAYA_MAX_CONCURRENT` (default 16).
+fn resolve_max_concurrent() -> usize {
+    match std::env::var("LAYA_MAX_CONCURRENT") {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => DEFAULT_MAX_CONCURRENT,
+        },
+        _ => DEFAULT_MAX_CONCURRENT,
+    }
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
@@ -158,6 +182,19 @@ async fn systemone(
         }
     }
 
+    // Bound concurrent in-flight requests: excess load is refused rather than queued, so the
+    // bodies buffered at once stay within the cap (#330). Held for the whole handler, including
+    // the inference gate below. Non-blocking: a full server answers 503 immediately.
+    let _admission = match app.admission.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server busy, try again later",
+            ))
+        }
+    };
+
     let obj = match body.as_object() {
         Some(o) if o.contains_key("questions") => o,
         _ => {
@@ -168,6 +205,12 @@ async fn systemone(
         }
     };
     let state = obj.get("state").cloned().unwrap_or(Value::Null);
+    // `serialize_state(null)` is the four characters `null`, so a body with no `state` key, or an
+    // explicit `"state": null`, would otherwise be answered as a decision about the literal text
+    // "null" — indistinguishable from a real string once serialized. Reject it before then.
+    if state.is_null() {
+        return Err(err(StatusCode::BAD_REQUEST, "'state' is required"));
+    }
     let questions_val = obj.get("questions").cloned().unwrap_or(Value::Null);
     let questions: laya::Questions = match questions_val {
         Value::Object(m) => m.into_iter().collect(),
@@ -190,6 +233,46 @@ async fn systemone(
             ),
         ));
     }
+
+    // Bound the option counts a single request can pack (amplification guard).
+    let mut total_options = 0usize;
+    for (qid, question) in &questions {
+        let Some(qobj) = question.as_object() else {
+            continue;
+        };
+        let qtype = qobj.get("type").and_then(|v| v.as_str());
+        let count = match (qtype, qobj.get("criteria")) {
+            (Some("choice"), Some(Value::Object(m))) => {
+                Some((m.len(), MAX_CHOICE_OPTIONS, "choice options"))
+            }
+            (Some("choice"), Some(Value::Array(a))) => {
+                Some((a.len(), MAX_CHOICE_OPTIONS, "choice options"))
+            }
+            (Some("score"), Some(Value::Array(a))) => {
+                Some((a.len(), MAX_SCORE_LEVELS, "score levels"))
+            }
+            _ => None,
+        };
+        if let Some((n, limit, what)) = count {
+            total_options += n;
+            if n > limit {
+                return Err(err(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!("too many {} for {:?} ({} > {})", what, qid, n, limit),
+                ));
+            }
+        }
+    }
+    if total_options > MAX_TOTAL_OPTIONS {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!(
+                "too many answer options across questions ({} > {})",
+                total_options, MAX_TOTAL_OPTIONS
+            ),
+        ));
+    }
+
     let state_len = match &state {
         Value::String(s) => s.chars().count(),
         other => other.to_string().chars().count(),
@@ -283,6 +366,7 @@ async fn main() {
     let app_state = AppState {
         router: Arc::new(build_router()),
         gate: Arc::new(Semaphore::new(1)),
+        admission: Arc::new(Semaphore::new(resolve_max_concurrent())),
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,
     };

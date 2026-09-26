@@ -3,6 +3,70 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.2 — tracks upstream Laya main (post-0.3.20, upstream @4066d5d)
+
+Ports the upstream `laya/` changes made after @970dc8c that affect the Rust surface. Golden parity
+fixtures were regenerated from upstream main and gained cases (plus a new `lang_structured.json`)
+exercising the routing changes below.
+
+### Changed
+- **Loanword rescue in language detection.** One accented loanword or proper noun (`café`,
+  `résumé`, `José`) no longer pulls otherwise-plain English off the English checkpoint. The
+  diacritic rate is measured over every character, so a single `é` in a short sentence used to
+  clear the non-English floor; `lang::latin_profile` now keeps English when it shows at least two
+  distinct function words no other list holds, carries at most one word with a non-English letter,
+  and stays under a higher rescue rate (0.06). A vocabulary of several distinct accented words is
+  still not rescued (upstream #337).
+- **Mixed-language routing reads every string value.** A short non-English field could hide behind
+  a long English one: joining every value into one 4000-char detection window let a long English
+  note fill the budget, or out-vote a short German message, and that message was then sent to the
+  English checkpoint. `lang::analyse` now, after the whole-state and per-line/-field scan, reads
+  each string value on its own — one non-English value is enough — so a value the joined window and
+  the segment scan cannot reach (a field past the 4000-char cap, or a non-Latin script too small a
+  fraction of the join to reclassify) still routes to `multilingual` (upstream #384).
+
+### Fixed
+- **`laya-serve` rejects a request with no state.** `serialize_state(null)` is the four characters
+  `null`, so a body with no `state` key (or an explicit `"state": null`) was answered as a decision
+  about the literal text "null" — HTTP 200, indistinguishable from a real string. It now returns
+  400 `'state' is required` before serialization (upstream: require a state on the HTTP surface).
+- **`laya-serve` bounds per-request option counts.** A single request packing thousands of choice
+  options or score levels tokenizes and collates into one large tensor. `POST /v1/systemone` now
+  rejects (413) a `choice` question with more than 100 options, a `score` question with more than
+  32 levels, or more than 512 answer options across all questions (upstream: scope option budgets
+  to HTTP serving).
+- **`laya-serve` bounds concurrent requests.** A new `LAYA_MAX_CONCURRENT` (default 16) caps the
+  requests admitted past auth at once; excess is refused with 503 rather than queued, so many
+  concurrent near-cap bodies cannot OOM the worker (upstream #330).
+- **A nested `choice` label is a named caller error.** A list-of-labels whose entry is itself an
+  array or object is rejected naming the question and the index, instead of being silently rendered
+  as its JSON text (and, over HTTP, becoming an opaque 500). A label is the answer key and option
+  text, so it must be a scalar (upstream #425).
+
+### Notes on upstream changes not needing a Rust change
+- **Tokenizer thread-safety (#... "serialise fast-tokenizer encoding").** The upstream lock guards
+  a shared Python fast tokenizer whose `truncation=True`/`padding=True` mutate it. The Rust
+  tokenizer's `encode` takes `&self` and never mutates; option truncation is done by slicing token
+  ids, so concurrent `predict()` calls are already safe. No-op here.
+- **Meta-device head init (#... "build the decision head without initialising overwritten
+  weights").** A torch-only speedup to skip weight initialisation the checkpoint overwrites. The
+  Rust port loads every parameter from `safetensors` directly; there is no random init to skip.
+- **CUDA `LAYA_CUDA_AMP`, XPU autocast/eviction, scoped CUDA-OOM CPU fallback.** All torch device
+  backends the Rust port does not have (it targets fp32 on candle's CPU backend; Metal is a
+  separate opt-in). No counterpart.
+- **Hooks `hooks_timeout` / run-default-hooks-once / TileLang fast-path dtype.** The Rust `Router`
+  and `Agent` have neither process-wide hooks nor the TileLang fast path, as noted in 0.2.1.
+- **`structured.py`, `evals`, `mcp`, benchmarks, docs, and the `laya-ts` parity fixes.** Not part
+  of the ported surface (structured output, the evaluation harness, the MCP server and the
+  TypeScript reference are all out of scope per `PLAN.md`); the `laya-ts` fixes bring that port in
+  line with the Python behaviour the Rust golden fixtures already track.
+
+### Deferred (upstream features not yet ported)
+- **Hub revision pinning + opt-in SHA-256 verification** (`revision`/`revisions`/`expected_sha256`)
+  and **`Agent.predict_long`** (windowed scan of over-long states) and the shortlist
+  **`cached_embed_fn`** are additive features that need model weights / the download path to test
+  meaningfully; they are left for a follow-up rather than shipped unverified in a patch release.
+
 ## 0.2.1 — tracks upstream Laya main (post-0.3.20, upstream @970dc8c)
 
 Ports the upstream `laya/` changes made after the 0.3.20 tag that affect the Rust surface. The

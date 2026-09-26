@@ -318,5 +318,35 @@
     "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
+  },
+  {
+    "input": "Please send me the invoice for my café order, I was charged twice and need a refund",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.012,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "I updated my résumé and the résumé looks good now for the new role today",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0556,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "the café serves a very naïve résumé of pâté dishes tonight",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.1034,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
   }
 ]
