@@ -318,5 +318,55 @@
     "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
+  },
+  {
+    "input": "Please send Jose the invoice and the refund for his order today",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Please send José the invoice and the refund for his order today",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0159,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "I would like a refund for the résumé service I paid for twice this month",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0278,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "We met at the café for a naïve chat about the résumé and the soirée plans",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0685,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0294,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
   }
 ]

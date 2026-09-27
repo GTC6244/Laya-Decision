@@ -3,6 +3,70 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.2 — tracks upstream Laya main (post-0.3.20, upstream @4066d5d)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @970dc8c) that affect the
+Rust surface. The golden parity fixtures were regenerated from upstream main and gained cases
+exercising the new routing behaviour below.
+
+### Changed
+- **Loanword rescue for English routing.** A single accented loanword or proper noun (`café`,
+  `résumé`, `José`) in an otherwise plain-English sentence used to clear the non-English diacritic
+  floor — the rate is measured over every character — and route to the multilingual checkpoint.
+  `lang::latin_profile` now keeps such text English when it shows at least two distinct English
+  function words that no other list holds and at most one word carrying a non-English letter, and
+  the diacritic rate is below the new `ENGLISH_RESCUE_DIACRITIC_RATE` (0.06). A higher rate, more
+  than one accented word (Nordic `två gånger`), or fewer English-only words still routes to
+  multilingual (upstream #337, #350).
+- **Language detection reads every string value in a dict state.** English sibling fields, or an
+  English note longer than the 4000-character segment-scan budget, could hide a non-English field
+  (e.g. a German customer message) behind them, so the joined detection window read as English and
+  routing fell through to the English checkpoint. `lang::analyse` now reads each string value on its
+  own after the segment scan and lets one non-English value decide, with the same name/acronym/code
+  guards the segment scan uses so a name field cannot pull an English ticket off the checkpoint
+  (upstream #384).
+
+### Fixed
+- **`laya-serve` rejects a missing state instead of answering about `"null"`.** A request with no
+  `state` (or `"state": null`) was answered as a confident decision about the literal text `null`,
+  with nothing in the response to show the state was absent. `POST /v1/systemone` now returns 400
+  `'state' is required`; a string state (including `"null"` and `""`) is left alone (upstream
+  serve-require-state).
+- **`laya-serve` bounds answer options.** A choice/score question with an unbounded option count
+  amplifies a small request into a large collated tensor. Requests are now capped at 100 choice
+  options, 32 score levels and 512 total options across questions, returning 413 (upstream #335).
+- **Choice labels must be scalars.** A `choice` question whose list-form `criteria` contains a list
+  or object label is rejected, naming the question and label index, instead of silently
+  JSON-stringifying it into an answer key (upstream #425). The dict form is unaffected: its keys are
+  always strings.
+
+### Added
+- **`laya-serve` admission control.** A non-blocking concurrency bound (`LAYA_MAX_CONCURRENT`,
+  default 16) admits requests just after auth and holds the slot through the response, shedding
+  excess load with 503 rather than buffering many bodies behind the single inference gate (upstream
+  #330).
+- **CLI `--preset` sends the text under the field the question set names** (`email`→`body`,
+  `guard`→`prompt`, `moderation`→`post`, `router`/default→`request`, `triage`→`message`) instead of
+  a fixed `text` key none of them reads (upstream fix/cli-preset-state-key). Routing is unaffected:
+  `route` reads the state only for key-invariant language detection.
+
+### Notes on upstream changes not needing a Rust change
+- The upstream torch/CUDA/XPU/TileLang/ONNX work (CUDA-AMP override, XPU bf16 autocast, per-request
+  OOM-fallback scoping, the TileLang fast path dtype, `ONNXAgent` lang threading) has no Rust
+  counterpart: the Rust engine uses native candle on CPU/Metal, not torch.
+- The async-hooks + per-hook timeout work and the `predict_batch` hook composition (#277, #435) do
+  not apply: the Rust `Router` has no process-wide hooks.
+- Revision pinning + SHA-256 checkpoint verification (#332, #347) is a Python model-loading feature;
+  the Rust loader uses `hf-hub` and has no revision-pinning surface yet.
+- The new labelled evaluation harness and `laya-eval` CLI, the `structured` schema changes
+  (pydantic Optional/anyOf, enum-collision and multi-type rejection), and the MCP tools
+  (`laya_shortlist`, preserved question fields) have no Rust surface.
+- `common.py`'s fast-tokenizer thread lock and the `no_init` decision-head build are torch/HF
+  specifics: Rust runs one inference at a time behind a single-permit gate and candle loads weights
+  directly, so neither changes behaviour here.
+- `feat(agent): predict_long` (scan a state past the context window and aggregate per question,
+  #363) is a new library capability not yet ported; it is tracked for a future release.
+
 ## 0.2.1 — tracks upstream Laya main (post-0.3.20, upstream @970dc8c)
 
 Ports the upstream `laya/` changes made after the 0.3.20 tag that affect the Rust surface. The

@@ -57,6 +57,15 @@ LANG_INPUTS = [
     "Je voudrais annuler mon abonnement car je ne suis pas satisfait du service.\nThe subscription management page keeps throwing an error whenever I click the cancel button and nothing happens after several tries on different browsers and devices today",
     # A pasted stack trace with code syntax must NOT count as a foreign segment: stays English.
     "Please refund the duplicate charge on my account.\nTraceback: os.path failed in round(el, 2) at non_english line 42 of the payment module during the retry",
+    # One accented loanword or proper noun must not pull plain English off the English checkpoint:
+    # two distinct English-only function words and at most one accented word rescue it (#337).
+    "Please send Jose the invoice and the refund for his order today",
+    "Please send José the invoice and the refund for his order today",
+    "I would like a refund for the résumé service I paid for twice this month",
+    # Rescue vetoed: a diacritic rate at/above 0.06 is a real non-English vocabulary, not a loanword.
+    "We met at the café for a naïve chat about the résumé and the soirée plans",
+    # Rescue denied: more than one word carries a non-English letter (Swedish two/gånger), #350.
+    "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
 ]
 
 EMAIL_INPUTS = [
@@ -91,6 +100,11 @@ ROUTER_INPUTS = [
     # routes to multilingual with the "mostly English, but a line or field reads as" reason.
     {"customer": "Eu preciso de ajuda com a minha conta pois fui cobrado duas vezes",
      "log": "The server returned an internal error and the request was retried three times before it finally failed on the second attempt with a timeout on the database connection pool that was exhausted"},
+    # A German field hidden behind an English field longer than the 4000-char segment-scan budget:
+    # the joined window reads English and the segment scan never reaches it, so only reading each
+    # string value on its own catches it (upstream #384). Routes multilingual, no mixed_segment.
+    {"a_log": "please help me with the account issue and the refund for the order " * 80,
+     "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
 ]
 
 

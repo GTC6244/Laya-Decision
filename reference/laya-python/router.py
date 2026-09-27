@@ -35,7 +35,11 @@ import time
 from collections.abc import Sequence as SequenceABC
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .hooks import (
+    HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
+    validate_timeout,
+)
+from .hooks import _SKIP_DEFAULTS
 from .lang import analyse
 
 # The hub repo bundles all three checkpoints; only the requested subfolder is downloaded.
@@ -198,6 +202,11 @@ class Router(HookRegistry):
         r = Router(preload=True, device="cuda")
         r.preload(["english", "multilingual"])      # or just the two you serve
 
+    Hub revisions are opt-in. `revision` applies one commit to every model;
+    `revisions={"english": "...", "multilingual": "..."}` overrides that per model,
+    which is useful when standalone repositories were reviewed at different commits.
+    Without either, huggingface_hub's normal default and existing offline cache are used.
+
     Hooks are opt-in and run at the Router level: `on_route` sees the routing decision,
     `on_load` / `on_evict` see model lifecycle, and `on_predict_start` / `on_predict_end`
     wrap the whole route+infer call. See `laya.hooks`.
@@ -207,6 +216,7 @@ class Router(HookRegistry):
     # `hooks`/`_hooks_mutex` come from HookRegistry.
     hooks_raise = True
     hooks_concurrent = True
+    hooks_timeout = None
     _hooks_lock = None
 
     def __init__(
@@ -214,6 +224,8 @@ class Router(HookRegistry):
         models: Optional[Dict[str, str]] = None,
         device: Optional[str] = None,
         token: Optional[str] = None,
+        revision: Optional[str] = None,
+        revisions: Optional[Dict[str, Optional[str]]] = None,
         max_loaded: int = 2,
         default: str = "english",
         auto_task_detection: bool = False,
@@ -225,10 +237,12 @@ class Router(HookRegistry):
         on_predict_end=None,
         hooks_raise: bool = True,
         hooks_concurrent: bool = True,
+        hooks_timeout: Optional[float] = None,
     ):
         self.hooks = normalise_hooks(hooks, on_predict_start, on_predict_end)
         self.hooks_raise = bool(hooks_raise)
         self.hooks_concurrent = bool(hooks_concurrent)
+        self.hooks_timeout = None if hooks_timeout is None else validate_timeout(hooks_timeout)
         self._hooks_lock = threading.RLock() if not hooks_concurrent else None
         self._hooks_mutex = threading.Lock()
         self.models = dict(STANDALONE_MODELS if standalone_repos else DEFAULT_MODELS)
@@ -236,6 +250,13 @@ class Router(HookRegistry):
             self.models.update({normalise_name(k): v for k, v in models.items()})
         self.device = device
         self.token = token or os.environ.get("HF_TOKEN")
+        # Optional Hub revision (commit SHA/branch/tag) applied to every checkpoint load.
+        # `revisions` overrides it per normalized model name, for standalone repos whose
+        # reviewed commits differ.
+        self.revision = revision
+        self.revisions: Dict[str, Optional[str]] = {
+            normalise_name(k): v for k, v in (revisions or {}).items()
+        }
         self.max_loaded = max(1, int(max_loaded))
         self.default = normalise_name(default)
         self.auto_task_detection = bool(auto_task_detection)
@@ -267,7 +288,11 @@ class Router(HookRegistry):
                 return self._agents[key]
             from .agent import Agent
             repo, sub = _split(self.models[key])
-            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub)
+            kwargs = {"device": self.device, "token": self.token, "subfolder": sub}
+            model_revision = self.revisions.get(key, self.revision)
+            if model_revision is not None:
+                kwargs["revision"] = model_revision
+            agent = Agent(repo, **kwargs)
             self._agents[key] = agent
             self._order.append(key)
             evicted = self._evict_locked()
@@ -275,7 +300,7 @@ class Router(HookRegistry):
         self._dispatch_lifecycle("on_evict", evicted)
         dispatch(compose_hooks(self.hooks), "on_load",
                  PredictContext(states=[], questions={}, model=key, agent=agent, router=self),
-                 raise_errors=self.hooks_raise, lock=self._hooks_lock)
+                 raise_errors=self.hooks_raise, lock=self._hooks_lock, timeout=self.hooks_timeout)
         return agent
 
     def _touch(self, key: str):
@@ -318,7 +343,7 @@ class Router(HookRegistry):
         for name in names:
             dispatch(compose_hooks(self.hooks), event,
                      PredictContext(states=[], questions={}, model=name, router=self),
-                     raise_errors=self.hooks_raise, lock=self._hooks_lock)
+                     raise_errors=self.hooks_raise, lock=self._hooks_lock, timeout=self.hooks_timeout)
 
     def attach(self, name: str, agent: Any):
         """Register an already-built Agent under `name` instead of loading a second copy.
@@ -372,6 +397,8 @@ class Router(HookRegistry):
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
             except Exception:
                 pass
         self._dispatch_lifecycle("on_evict", freed)
@@ -380,6 +407,12 @@ class Router(HookRegistry):
     def loaded(self) -> List[str]:
         with self._lock:
             return list(self._order)
+
+    @property
+    def loaded_revisions(self) -> Dict[str, Optional[str]]:
+        """Commit SHA each resident agent was loaded from (None for local paths)."""
+        with self._lock:
+            return {name: getattr(agent, "revision", None) for name, agent in self._agents.items()}
 
     def _resolve_hint(self, hint: Any, state: Union[str, dict, list, None]) -> Optional[bool]:
         """True/False for a hint about whether the English checkpoint can read `state`.
@@ -405,6 +438,7 @@ class Router(HookRegistry):
         lang_guess: Optional[Any] = None,
         hooks=None,
         hooks_raise: Optional[bool] = None,
+        hooks_timeout: Optional[float] = None,
     ) -> RouteDecision:
         """Decide which checkpoint to use, then let `on_route` hooks observe or replace it.
 
@@ -415,8 +449,9 @@ class Router(HookRegistry):
         decision = self._route(state, questions, model=model, task=task, lang=lang, lang_guess=lang_guess)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
         active = compose_hooks(self.hooks, hooks)
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
         ctx = PredictContext(states=[state], questions=questions or {}, decision=decision, router=self)
-        dispatch(active, "on_route", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+        dispatch(active, "on_route", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
         return ctx.decision
 
     def _route(
@@ -525,6 +560,7 @@ class Router(HookRegistry):
         on_predict_start=None,
         on_predict_end=None,
         hooks_raise: Optional[bool] = None,
+        hooks_timeout: Optional[float] = None,
         max_len: Optional[int] = None,
         head_max_len: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -537,10 +573,12 @@ class Router(HookRegistry):
         """
         active = compose_hooks(self.hooks, hooks, on_predict_start, on_predict_end)
         raise_errors = self.hooks_raise if hooks_raise is None else bool(hooks_raise)
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
 
         # Per-call hooks apply to the whole call, including on_route inside route().
         decision = self.route(state, questions, model=model, task=task, lang=lang,
-                              lang_guess=lang_guess, hooks=hooks, hooks_raise=hooks_raise)
+                              lang_guess=lang_guess, hooks=hooks, hooks_raise=hooks_raise,
+                              hooks_timeout=hooks_timeout)
         agent = self.load(decision["model"])
         effective_lang = lang
         if effective_lang is None and decision.get("detection") and decision["detection"].get("language"):
@@ -550,7 +588,7 @@ class Router(HookRegistry):
                              model=decision["model"], agent=agent, router=self,
                              max_len=max_len, head_max_len=head_max_len)
         try:
-            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+            dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             if ctx.results is None:
                 # Pass token-budget overrides only when set, so any Agent-like object that does
                 # not accept them still works on the default path.
@@ -560,6 +598,7 @@ class Router(HookRegistry):
                 if ctx.head_max_len is not None:
                     overrides["head_max_len"] = ctx.head_max_len
                 
+                skip = _SKIP_DEFAULTS.set(True)
                 try:
                     result = agent.system_one(ctx.states[0], ctx.questions, lang=effective_lang, **overrides)
                 except TypeError as e:
@@ -567,6 +606,8 @@ class Router(HookRegistry):
                         result = agent.system_one(ctx.states[0], ctx.questions, **overrides)
                     else:
                         raise
+                finally:
+                    _SKIP_DEFAULTS.reset(skip)
                 result["routing"] = dict(decision)
                 ctx.results = [result]
             else:
@@ -578,7 +619,7 @@ class Router(HookRegistry):
         except BaseException as exc:
             ctx.error = exc
             try:
-                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 exc.__context__ = hook_exc
             raise
@@ -587,7 +628,7 @@ class Router(HookRegistry):
             if ctx.results is not None:
                 ctx.usage = aggregate_usage(ctx.results)
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 if ctx.error is not None:
                     ctx.error.__context__ = hook_exc
@@ -662,6 +703,7 @@ class Router(HookRegistry):
         self,
         requests: Sequence[Dict[str, Any]],
         batch_size: Optional[int] = None,
+        hooks_timeout: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Route and execute a heterogeneous request batch with minimal model churn.
 
@@ -686,6 +728,7 @@ class Router(HookRegistry):
                 ``questions`` and may include ``model``, ``task``, ``lang`` or
                 ``lang_guess`` overrides.
             batch_size: Optional maximum number of states per Agent forward-pass batch.
+            hooks_timeout: Override the Router's ``hooks_timeout`` for this call.
 
         Returns:
             One normal Router prediction result per request, in the same order as the input.
@@ -711,6 +754,7 @@ class Router(HookRegistry):
         # for a request that arrived through `predict_batch`.
         active = compose_hooks(self.hooks)
         raise_errors = self.hooks_raise
+        timeout = self.hooks_timeout if hooks_timeout is None else validate_timeout(hooks_timeout)
 
         for model_name, indices in groups.items():
             agent = self.load(model_name)
@@ -724,7 +768,8 @@ class Router(HookRegistry):
                                          decision=dict(decisions[i]), model=model_name, agent=agent,
                                          router=self)
                     started.append(ctx)
-                    dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                    dispatch(active, "on_predict_start", ctx, raise_errors=raise_errors,
+                             lock=self._hooks_lock, timeout=timeout)
 
                 # Agent.predict_batch evaluates one shared question schema and token budget over
                 # many states. Preserve Router's heterogeneous-request API by splitting each
@@ -777,6 +822,7 @@ class Router(HookRegistry):
                     batch_kwargs = dict(group["overrides"])
                     if group["lang"] is not None:
                         batch_kwargs["lang"] = group["lang"]
+                    skip = _SKIP_DEFAULTS.set(True)
                     try:
                         batch_results = agent.predict_batch(
                             [ctx.states[0] for _, ctx in items],
@@ -797,6 +843,8 @@ class Router(HookRegistry):
                             )
                         else:
                             raise
+                    finally:
+                        _SKIP_DEFAULTS.reset(skip)
 
                     if len(batch_results) != len(items):
                         raise RuntimeError(
@@ -815,16 +863,17 @@ class Router(HookRegistry):
                     if ctx.results is None:
                         ctx.error = exc
                         try:
-                            dispatch(active, "on_error", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                            dispatch(active, "on_error", ctx, raise_errors=raise_errors,
+                                     lock=self._hooks_lock, timeout=timeout)
                         except BaseException as hook_exc:
                             exc.__context__ = hook_exc
                 try:
-                    self._end_contexts(active, started, raise_errors)
+                    self._end_contexts(active, started, raise_errors, timeout)
                 except BaseException as hook_exc:
                     exc.__context__ = hook_exc
                 raise
 
-            self._end_contexts(active, started, raise_errors)
+            self._end_contexts(active, started, raise_errors, timeout)
             for i, ctx in zip(indices, started):
                 results[i] = ctx.results[0]
 
@@ -837,7 +886,8 @@ class Router(HookRegistry):
 
     predict_many = predict_batch
 
-    def _end_contexts(self, active: List[Any], contexts: List[PredictContext], raise_errors: bool) -> None:
+    def _end_contexts(self, active: List[Any], contexts: List[PredictContext], raise_errors: bool,
+                      timeout: Optional[float] = None) -> None:
         """Finish each request of a batch the way `predict`'s `finally` finishes one.
 
         Every context gets its `on_predict_end` even if an earlier one's end hook raises; the
@@ -853,7 +903,8 @@ class Router(HookRegistry):
         first_error: Optional[BaseException] = None
         for ctx in contexts:
             try:
-                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors, lock=self._hooks_lock)
+                dispatch(active, "on_predict_end", ctx, raise_errors=raise_errors,
+                         lock=self._hooks_lock, timeout=timeout)
             except BaseException as hook_exc:
                 if ctx.error is not None:
                     ctx.error.__context__ = hook_exc

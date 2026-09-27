@@ -21,6 +21,21 @@ use serde_json::{json, Value};
 /// Ready-made question presets a prediction can run instead of `router_questions()`.
 const PRESETS: [&str; 5] = ["email", "guard", "moderation", "router", "triage"];
 
+/// The state field each preset's instructions name, so the CLI puts the text where that question
+/// set reads it (upstream `fix/cli-preset-state-key`). `--predict` without a preset answers
+/// `router_questions()`, whose field is `request`, which is also the default. Routing is unaffected:
+/// `route` reads the state only for language detection, which is key-invariant.
+fn preset_state_key(preset: Option<&str>) -> &'static str {
+    match preset {
+        Some("email") => "body",
+        Some("guard") => "prompt",
+        Some("moderation") => "post",
+        Some("triage") => "message",
+        // "router", and the plain --predict path with no preset.
+        _ => "request",
+    }
+}
+
 /// Build a preset's questions by name. `name` is validated by clap against [`PRESETS`].
 fn preset_questions(name: &str) -> Questions {
     match name {
@@ -125,13 +140,15 @@ fn show_answers(result: &Value) {
 
 /// Route or predict one request; returns 0 on success, 2 on a handled error.
 fn run(text: &str, cli: &Cli, router: &Router) -> i32 {
-    let state = json!({ "text": text });
     let h = hints(cli);
     if cli.predict || cli.preset.is_some() {
         let questions = match &cli.preset {
             Some(name) => preset_questions(name),
             None => router_questions(),
         };
+        // Send the text under the field the answered question set names, not a fixed `text` key
+        // none of them reads (upstream fix/cli-preset-state-key).
+        let state = json!({ preset_state_key(cli.preset.as_deref()): text });
         match router.predict(&state, &questions, &h) {
             Ok(result) => {
                 let j = result.to_json();
@@ -152,6 +169,7 @@ fn run(text: &str, cli: &Cli, router: &Router) -> i32 {
             }
         }
     } else {
+        let state = json!({ "text": text });
         match router.route(&state, None, &h) {
             Ok(d) => {
                 let j = d.to_json();

@@ -91,6 +91,8 @@ export interface AgentOptions {
   provider: SessionProvider;
   tok?: TokenizerLike;
   cfg?: AgentCfg;
+  /** Commit SHA the artifacts were loaded from (pinned/requested or `x-repo-commit`); null for local dirs. */
+  revision?: string | null;
   max_len?: number;
   head_max_len?: number;
   temperature?: unknown;
@@ -259,6 +261,7 @@ export class Agent extends HookRegistry {
   hooksRaise: boolean;
   cfg: AgentCfg;
   provider: SessionProvider;
+  revision: string | null;
   tok: TokenizerLike;
   maxLen: number;
   headMaxLen: number;
@@ -275,6 +278,7 @@ export class Agent extends HookRegistry {
     super();
     if (!opts || !opts.provider) throw new Error("Agent needs a provider");
     this.provider = opts.provider;
+    this.revision = opts.revision ?? null;
     // Hooks are opt-in; an unset hook list is a no-op. See hooks.ts.
     this.hooks = normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     this.hooksRaise = opts.hooksRaise ?? true;
@@ -545,6 +549,13 @@ export class Agent extends HookRegistry {
       numThreads?: number;
       /** Per-language temperature overrides; see AgentOptions.lang_temperatures. */
       lang_temperatures?: AgentOptions["lang_temperatures"];
+      /** Optional commit SHA/branch/tag to fetch; omitted uses the Hub default and existing cache. */
+      revision?: string | null;
+      /**
+       * Opt-in `{artifact name: SHA-256 hexdigest}` check before any artifact is parsed
+       * or executed. A missing artifact or digest mismatch throws and loading is refused.
+       */
+      expectedSha256?: Record<string, string>;
     },
   ): Promise<Agent> {
     const sub = opts?.subfolder ?? null;
@@ -553,25 +564,39 @@ export class Agent extends HookRegistry {
     let cfg: AgentCfg = {};
     let tokenizerJson: unknown | null = null;
     let dir = opts?.localDir ?? modelDirOrRepo;
+    let revision: string | null = null;
     let provider: SessionProvider;
     if (isBrowser) {
       const { loadWebBundle, createWebProvider } = await import("./providers.js");
-      const bundle = await loadWebBundle(modelDirOrRepo, { subfolder: sub });
+      const bundle = await loadWebBundle(modelDirOrRepo, {
+        subfolder: sub,
+        revision: opts?.revision,
+        expectedSha256: opts?.expectedSha256,
+      });
       cfg = bundle.cfg;
       tokenizerJson = bundle.tokenizerJson;
       dir = bundle.dir;
-      provider = await createWebProvider(dir, { numThreads: opts?.numThreads });
+      revision = bundle.revision;
+      provider = await createWebProvider(dir, {
+        numThreads: opts?.numThreads,
+        expectedSha256: opts?.expectedSha256,
+      });
     } else {
       const { loadNodeBundle, createNodeProvider } = await import("./providers.js");
       const bundle = await loadNodeBundle(modelDirOrRepo, {
         subfolder: sub,
         localDir: opts?.localDir,
         token: opts?.token,
+        revision: opts?.revision,
+        expectedSha256: opts?.expectedSha256,
       });
       cfg = bundle.cfg;
       tokenizerJson = bundle.tokenizerJson;
       dir = bundle.dir;
-      provider = await createNodeProvider(dir, { device: opts?.device, numThreads: opts?.numThreads });
+      revision = bundle.revision;
+      provider = await createNodeProvider(dir, {
+        device: opts?.device, numThreads: opts?.numThreads, expectedSha256: opts?.expectedSha256,
+      });
     }
     if (!tokenizerJson) {
       throw new Error(
@@ -588,6 +613,6 @@ export class Agent extends HookRegistry {
         `Incompatible model: tokenizer.json is missing or invalid in ${JSON.stringify(dir)}: ${String(error)}`,
       );
     }
-    return new Agent({ provider, tok, cfg, lang_temperatures: opts?.lang_temperatures });
+    return new Agent({ provider, tok, cfg, revision, lang_temperatures: opts?.lang_temperatures });
   }
 }

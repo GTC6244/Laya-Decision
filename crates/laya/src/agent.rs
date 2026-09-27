@@ -488,6 +488,29 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
                     qid
                 )));
             }
+            // A label in the list form is used as the answer key and rendered as option text, so a
+            // nested list or object label has no meaning here. In the dict form keys are always
+            // strings, so only the list form can carry one. Reject it, naming the question and the
+            // label, rather than letting it be JSON-stringified into a key (upstream #425). The dict
+            // form (JSON object) cannot hit this: its keys are strings by construction.
+            if let Some(Value::Array(a)) = crit {
+                for (i, label) in a.iter().enumerate() {
+                    let kind = match label {
+                        Value::Array(_) => "list",
+                        Value::Object(_) => "object",
+                        _ => continue,
+                    };
+                    return Err(LayaError::InvalidQuestion(format!(
+                        "question {:?}: choice label {} is a {}; a label is rendered as option text \
+                         and used as the answer key, so it must be a scalar (a string, number or \
+                         null), got {}",
+                        qid,
+                        i,
+                        kind,
+                        crate::common::py_json(label)
+                    )));
+                }
+            }
         }
         QType::Score => {
             let arr = match crit {
@@ -699,5 +722,31 @@ mod tests {
     fn accepts_fully_described_score_levels() {
         let q = json!({"type": "score", "instructions": "rate", "criteria": ["low", "high"]});
         assert!(check_question("s", &q).is_ok());
+    }
+
+    #[test]
+    fn rejects_nested_choice_label() {
+        // A list/object label in the list form is used as the answer key: reject it as a named
+        // caller error, naming the question and the label index (upstream #425).
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": [["billing"], "tech"]});
+        let msg = check_question("dept", &q).unwrap_err().to_string();
+        assert!(msg.contains("choice label 0 is a list"), "got: {msg}");
+
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": ["billing", {"tech": "x"}]});
+        let msg = check_question("dept", &q).unwrap_err().to_string();
+        assert!(msg.contains("choice label 1 is a object"), "got: {msg}");
+    }
+
+    #[test]
+    fn accepts_scalar_choice_labels() {
+        // Strings, numbers and null are all valid answer keys.
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": ["billing", 2, null]});
+        assert!(check_question("dept", &q).is_ok());
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": {"billing": "money", "tech": "bugs"}});
+        assert!(check_question("dept", &q).is_ok());
     }
 }
