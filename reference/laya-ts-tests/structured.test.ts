@@ -68,6 +68,10 @@ describe("structured/mapping", () => {
     const q = questionsFromJsonSchema({ type: "object", properties: { x: { enum: [true, false] } } });
     expect(q.x.type).toBe("noul");
   });
+  it("nullable boolean remains noul", () => {
+    const q = questionsFromJsonSchema({ type: "object", properties: { x: { type: ["null", "boolean"] } } });
+    expect(q.x.type).toBe("noul");
+  });
   it("plan has one field per property", () => {
     expect(planFromJsonSchema(SCHEMA)).toHaveLength(4);
   });
@@ -101,9 +105,21 @@ describe("structured/projection", () => {
 
 describe("structured/rejections", () => {
   const bad = (schema: unknown) => () => questionsFromJsonSchema(schema);
+  it("rejects enum values with the same choice label", () => {
+    for (const values of [[1, "1"], [null, "null"], [true, "true"]]) {
+      expect(bad({ type: "object", properties: { x: { enum: values } } }))
+        .toThrowError(/properties\.x: enum values produce duplicate choice labels/);
+    }
+  });
   it("rejects a free string", () => {
     expect(bad({ type: "object", properties: { a: { type: "string" } } }))
       .toThrowError(/properties\.a: a free string cannot be a fixed option set/);
+  });
+  it("rejects multiple non-null types even in a nullable union", () => {
+    for (const types of [["boolean", "integer"], ["null", "integer", "boolean"]]) {
+      expect(bad({ type: "object", properties: { a: { type: types, minimum: 0, maximum: 2 } } }))
+        .toThrowError(/properties\.a: .*multiple non-null types/);
+    }
   });
   it("rejects arrays, nested objects and $ref", () => {
     expect(bad({ type: "object", properties: { a: { type: "array", items: { type: "string" } } } }))

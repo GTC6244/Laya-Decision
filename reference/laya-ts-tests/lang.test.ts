@@ -26,6 +26,22 @@ describe("lang", () => {
     expect(a.language).toBe("az");
     expect(a.isEnglish).toBe(false);
   });
+  // The Azerbaijani stopword list above has always been in the port, but `ə` was missing from
+  // NON_EN_DIACRITICS, so the one letter that identifies the language carried no weight. English
+  // text with a single schwa read as English here and as undecided in Python. Expectations from
+  // Python's laya.lang.analyse on the same inputs.
+  it("counts the Azerbaijani schwa as a non-English letter", () => {
+    const a = analyse("və the quick brown");
+    expect(a.diacriticRate).toBeCloseTo(0.0556, 3);
+    expect(a.isEnglish).toBe(false);
+    expect(a.language).toBe(null);
+  });
+  it("still routes plain english without a schwa to english", () => {
+    const a = analyse("the quick brown fox");
+    expect(a.diacriticRate).toBe(0);
+    expect(a.isEnglish).toBe(true);
+    expect(a.language).toBe("en");
+  });
   it("a CJK sentence inside an English ticket is not english", () => {
     const a = analyse("please check the attached logs 請重啟服務器然後再試一次 and tell me what failed");
     expect(a.script).toBe("han");
@@ -68,5 +84,30 @@ describe("lang", () => {
   it("does not pull es or du into German", () => {
     expect(analyse("que hora es en australia").language).toBe("es");
     expect(analyse("baisse le volume du haut-parleur").language).toBe("fr");
+  });
+  it.each<[string, string | null, boolean]>([
+    ["Preciso do contrato confidencial assinado até sexta.", "pt", false],
+    ["Gătește-mi o rețetă de sarmale de post pentru mâine.", "ro", false],
+    ["Müşteriden iki kez ücret alındı ve para iadesi istiyor", null, false],
+    ["Khách hàng đã bị thu phí hai lần và muốn được hoàn tiền ngay", null, false],
+  ])("counts accented words whole, like Python: %s", (text, language, english) => {
+    const a = analyse(text);
+    expect(a.language).toBe(language);
+    expect(a.isEnglish).toBe(english);
+    expect(a.languageUndecided).toBe(language === null);
+  });
+
+  it("does not let English sibling fields hide a German value", () => {
+    const sentence = "Mein Konto wurde zweimal belastet";
+    const asString = analyse(sentence);
+    expect(asString.language).toBe("de");
+    expect(asString.isEnglish).toBe(false);
+    expect(analyse({ message: sentence }).language).toBe(asString.language);
+    const buried = analyse({
+      agent_notes: "Please check the shipping status and refund the customer if the charge was duplicated. The order was late and we have not heard back.",
+      message: sentence,
+    });
+    expect(buried.isEnglish).toBe(false);
+    expect(buried.language).toBe("de");
   });
 });

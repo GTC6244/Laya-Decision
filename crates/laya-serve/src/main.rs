@@ -13,6 +13,7 @@
 //! | `LAYA_MODELS`    | comma list to preload (english,multilingual,typed-decisions) | (all) |
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
+//! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,6 +39,16 @@ const KNOWN_MODELS: [&str; 3] = ["english", "multilingual", "typed-decisions"];
 const MAX_QUESTIONS: usize = 64;
 const MAX_STATE_CHARS: usize = 50_000;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+// HTTP-only amplification guard; the library keeps its own head_max_len-aware budget. A choice or
+// score question collates one tensor row per option, so an unbounded option count on an otherwise
+// small request OOMs the worker just as a huge state would (upstream #335).
+const MAX_CHOICE_OPTIONS: usize = 100;
+const MAX_SCORE_LEVELS: usize = 32;
+const MAX_TOTAL_OPTIONS: usize = 512;
+// Concurrent requests admitted before the single inference gate. Many near-cap bodies buffered
+// while waiting for the one worker can OOM the process even though each request is valid, so
+// admission is bounded with a non-blocking check and the excess gets 503 (upstream #330).
+const DEFAULT_MAX_CONCURRENT: usize = 16;
 
 /// Constant-time byte comparison, so bearer-token checks do not leak the token by timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -55,8 +66,20 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 struct AppState {
     router: Arc<Router>,
     gate: Arc<Semaphore>,
+    /// Non-blocking admission bound on in-flight requests, held from just after auth through the
+    /// response so many buffered bodies cannot pile up behind the single inference gate (#330).
+    admission: Arc<Semaphore>,
     api_key: Option<String>,
     device: String,
+}
+
+/// Positive integer from an env var, or `default` when unset, empty or unparseable.
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(default)
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
@@ -158,6 +181,18 @@ async fn systemone(
         }
     }
 
+    // Bound in-flight requests without blocking: a non-blocking acquire, held to the end of the
+    // handler, so excess load is shed with 503 rather than buffering behind the inference gate.
+    let _admit = match app.admission.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server busy; too many concurrent requests",
+            ))
+        }
+    };
+
     let obj = match body.as_object() {
         Some(o) if o.contains_key("questions") => o,
         _ => {
@@ -167,6 +202,16 @@ async fn systemone(
             ))
         }
     };
+    // A missing or null `state` is the one input where a silent wrong answer is worse than an
+    // error: with no state the engine would answer about the literal text "null" at high
+    // confidence, and the caller has no signal anything went wrong. A string state ("null", "")
+    // is the caller's business and is left alone (upstream #375/serve-require-state).
+    match obj.get("state") {
+        None | Some(Value::Null) => {
+            return Err(err(StatusCode::BAD_REQUEST, "'state' is required"))
+        }
+        _ => {}
+    }
     let state = obj.get("state").cloned().unwrap_or(Value::Null);
     let questions_val = obj.get("questions").cloned().unwrap_or(Value::Null);
     let questions: laya::Questions = match questions_val {
@@ -187,6 +232,54 @@ async fn systemone(
                 "too many questions ({} > {})",
                 questions.len(),
                 MAX_QUESTIONS
+            ),
+        ));
+    }
+    // Bound the number of answer options across questions: each choice label or score level becomes
+    // one collated tensor row, so an unbounded count amplifies a small request (upstream #335).
+    let mut total_options = 0usize;
+    for (qid, question) in &questions {
+        let Some(q) = question.as_object() else {
+            continue;
+        };
+        let qtype = q.get("type").and_then(|v| v.as_str());
+        let count = match q.get("criteria") {
+            Some(Value::Object(m)) => m.len(),
+            Some(Value::Array(a)) => a.len(),
+            _ => continue,
+        };
+        match qtype {
+            Some("choice") => {
+                total_options += count;
+                if count > MAX_CHOICE_OPTIONS {
+                    return Err(err(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        &format!(
+                            "too many choice options for {qid:?} ({count} > {MAX_CHOICE_OPTIONS})"
+                        ),
+                    ));
+                }
+            }
+            // A score question takes its levels as a list; a dict criteria is not a level list.
+            Some("score") if matches!(q.get("criteria"), Some(Value::Array(_))) => {
+                total_options += count;
+                if count > MAX_SCORE_LEVELS {
+                    return Err(err(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        &format!(
+                            "too many score levels for {qid:?} ({count} > {MAX_SCORE_LEVELS})"
+                        ),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if total_options > MAX_TOTAL_OPTIONS {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!(
+                "too many answer options across questions ({total_options} > {MAX_TOTAL_OPTIONS})"
             ),
         ));
     }
@@ -280,9 +373,11 @@ async fn main() {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "cpu".to_string());
+    let max_concurrent = env_usize("LAYA_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT);
     let app_state = AppState {
         router: Arc::new(build_router()),
         gate: Arc::new(Semaphore::new(1)),
+        admission: Arc::new(Semaphore::new(max_concurrent)),
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,
     };
