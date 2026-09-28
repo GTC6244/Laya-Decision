@@ -93,10 +93,14 @@ fn regexes() -> &'static Regexes {
             signature_markers: vec![
                 Regex::new(r"^\s*--\s*$").unwrap(),
                 // English closing: closing word (case-insensitive, scoped) + optional extension +
-                // punctuation + at most 3 capitalised name-words. The name class excludes lowercase
-                // letters so `Regards, Łukasz` is a sign-off but `Thanks for the reply` is not.
+                // punctuation + at most 3 name-words. A name starts with a letter that is not
+                // lowercase in any script — capitalised (`Łukasz`, `Дмитрий`) or caseless
+                // (`山田`) — matched here as `[\p{Lu}\p{Lt}\p{Lo}]`, the same rule as upstream's
+                // `_is_english_signoff` (and the TS port's `\p{Lu}\p{Lt}\p{Lo}`). Combining marks
+                // ride along with the letter before them. So `Regards, Łukasz` is a sign-off,
+                // `Thanks, żaneta` and `Thanks for the reply` are not.
                 Regex::new(
-                    r"^\s*(?i:best|kind|warmest|warm|many thanks|thanks|thank you|regards|cheers|sincerely)(?i:\s+(?:and|&)\s+regards|\s+(?:regards|wishes|again|in advance|a lot|so much|very much))?[\s,;:!.]*(?:[^\W\d_a-zß-öø-ÿ][\w'-]*[\s,.]*){0,3}$",
+                    r"^\s*(?i:best|kind|warmest|warm|many thanks|thanks|thank you|regards|cheers|sincerely)(?i:\s+(?:and|&)\s+regards|\s+(?:regards|wishes|again|in advance|a lot|so much|very much))?[\s,;:!.]*(?:[\p{Lu}\p{Lt}\p{Lo}][\w\u{0300}-\u{036f}'-]*[\s,.]*){0,3}$",
                 )
                 .unwrap(),
                 Regex::new(r"(?i)^\s*sent from my (iphone|android|mobile|ipad)").unwrap(),
@@ -369,6 +373,24 @@ mod tests {
         assert!(out.contains("please process my refund"));
         assert!(!out.contains("Best regards"));
         assert!(!out.contains("John Smith"));
+    }
+
+    #[test]
+    fn removes_signoff_with_non_latin1_capital_name() {
+        // `Łukasz` starts with an uppercase letter (Lu) outside Latin-1, so it is a sign-off name.
+        let out = clean_email_body("Please refund my order.\n\nRegards, Łukasz");
+        assert!(out.contains("Please refund my order"));
+        assert!(!out.contains("Regards"));
+        assert!(!out.contains("Łukasz"));
+    }
+
+    #[test]
+    fn keeps_line_with_lowercase_non_latin1_name() {
+        // `żaneta` starts with a lowercase letter (Ll); the old Latin-1-limited name class read it
+        // as a capital and dropped the line. Category-based matching keeps it (upstream signoff fix).
+        let out = clean_email_body("Please refund my order.\n\nThanks, żaneta");
+        assert!(out.contains("Please refund my order"));
+        assert!(out.contains("żaneta"));
     }
 
     #[test]

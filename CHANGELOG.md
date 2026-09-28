@@ -3,6 +3,68 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.3 — tracks upstream Laya 0.3.21 (upstream @9d95567)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @4066d5d) that affect the
+Rust surface, up to the 0.3.21 release. The golden parity fixtures were regenerated from upstream
+0.3.21; they are byte-identical to the previous set, because the ported behaviour changes do not
+alter any sampled case (the language change is a behaviour-preserving fast-path skip, and the
+sign-off change only affects sign-off names outside Latin-1).
+
+### Changed
+- **Email sign-off detection matches names by Unicode category, not a Latin-1 range.** A closing
+  line's trailing name is now recognised when its first letter is uppercase (`Lu`), titlecase
+  (`Lt`) or caseless (`Lo`) in any script, matching upstream's new `_is_english_signoff`. The old
+  name class excluded only `a-z` and `ß-ÿ`, so an extended-Latin **lowercase** name such as
+  `żaneta` was read as a capital and the line `Thanks, żaneta` was dropped as a signature; it is now
+  kept, while `Regards, Łukasz` and `Дмитрий`/`山田` closings are still stripped (upstream
+  signoff fix).
+- **Choice labels in list form must be unique and non-null.** A `null` label is rejected (it would
+  render as the text `null` while its answer key is the string `"null"`, so a client cannot tell it
+  from the string `"null"`), and two labels that collapse to the same answer key are rejected naming
+  the repeat — both previously produced a question that silently scored fewer options than the caller
+  wrote. The nested-list/object rejection message now says a label must be “a string, number or
+  bool” (upstream #425 duplicate/null-label fix).
+
+### Added
+- **`laya-serve` honours `LAYA_MAX_LOADED`** (default 2): the number of checkpoints kept resident at
+  once. A value below what routing can choose reloads one per switch; preloading still raises the cap
+  to hold whatever it builds, so this never evicts a preloaded checkpoint (upstream `LAYA_MAX_LOADED`).
+- **`laya-serve` returns `Retry-After: 1` on a 503.** The admission-control shed now hints when a
+  slot is likely free, since admission turns over at inference speed (upstream 503 `Retry-After`).
+- **CLI `--model auto`** routes the request (the same as omitting `--model`); other values reach the
+  router, which already resolves names and aliases (`en`, `ml`, `td`, …) through `normalise_name`
+  (upstream cli `model_name`).
+
+### Performance
+- **Language detection skips leaf lines shorter than 7 characters** before the code-line check and a
+  full analysis pass. Such a line can never be selected as a state's deciding non-English segment
+  (every branch needs four word tokens or ten letters), so this is behaviour-preserving (upstream
+  `lang` short-line skip).
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **Opt-in abstention / `min_confidence` and `laya.confidence`** (#361), **`decide_batch`**, the
+  **`predict_long` hook threading**, **`predict_batch` `sort_by_length` / per-request token budget**,
+  **`Router(agent_kwargs=…)` / per-model `LAYA_SHA256_DIGESTS`** and the batch end-hook ordering
+  rework all live on Python surfaces the Rust port does not have: it is single-request with no hooks,
+  no batch path, no structured `decide`, and no `agent_kwargs`/digest plumbing.
+- **`laya-serve` per-request `max_len`/`head_max_len` and `LAYA_MAX_TOKEN_BUDGET`** (#583) do not
+  apply: the Rust `Agent.system_one` has no token-budget override argument, so there is nothing to
+  cap. The `usage["options"]` collapse report (#538) has no counterpart for the same reason.
+- **`/health` device/`cpu_fallbacks` fields** report torch's silent GPU→CPU per-request fallback;
+  the Rust engine uses native candle and has no scoped OOM-fallback counter to surface.
+- **The torch/ONNX/TileLang/`torch.compile` work** (dynamic-shape attention for ONNX export, the
+  `compile=` option, per-thread duck-shape, temperature-shape validation guarding a Python
+  `IndexError`) has no Rust counterpart; the Rust temperature loader always yields three clamped
+  values, so the shape guard is moot.
+- **`email_state(max_chars=…)`** was left off to keep the public Rust signature stable for a patch
+  release; the underlying `clean_email_body_with(body, max_chars)` already exposes the budget.
+- **CLI `--questions` / `--batch` / `--batch-size` / `--max-len` / `--head-max-len`** need the batch
+  and token-budget surfaces the Rust port does not have; `--preset` already sends the text under the
+  field each preset names, matching upstream's new `state_field`.
+- The **integrations (LangChain, LlamaIndex, CrewAI), MCP server/tools, `_compile`, `revisions`,
+  `hooks`, `onnx_agent`, `evals`** modules are Python-only and out of scope for the Rust port.
+
 ## 0.2.2 — tracks upstream Laya main (post-0.3.20, upstream @4066d5d)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @970dc8c) that affect the

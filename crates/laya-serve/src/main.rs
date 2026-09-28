@@ -127,9 +127,15 @@ fn resolve_model(model: Option<&str>) -> Option<String> {
 
 fn build_router() -> Router {
     let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty());
+    // Checkpoints kept resident at once (upstream `LAYA_MAX_LOADED`, default 2 — the number
+    // automatic routing picks between). A value below what routing can choose reloads one per
+    // switch; `preload` still raises the cap to hold whatever it builds, so this never evicts a
+    // preloaded checkpoint. Unset/invalid falls back to the default, like `LAYA_MAX_CONCURRENT`.
+    let max_loaded = env_usize("LAYA_MAX_LOADED", RouterOptions::default().max_loaded);
     let router = Router::new(RouterOptions {
         device,
         auto_task_detection: env_bool("LAYA_AUTO_TASK", false),
+        max_loaded,
         ..Default::default()
     })
     .expect("router options");
@@ -186,10 +192,16 @@ async fn systemone(
     let _admit = match app.admission.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
-            return Err(err(
+            // Retry-After tells well-behaved clients when a slot is likely free: admission turns
+            // over at inference speed, so one second is the honest hint (upstream 503 Retry-After).
+            let mut headers = HeaderMap::new();
+            headers.insert("retry-after", "1".parse().unwrap());
+            return Ok((
                 StatusCode::SERVICE_UNAVAILABLE,
-                "server busy; too many concurrent requests",
-            ))
+                headers,
+                Json(json!({ "detail": "server busy; too many concurrent requests" })),
+            )
+                .into_response());
         }
     };
 

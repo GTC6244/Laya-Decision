@@ -93,7 +93,9 @@ laya                                           # interactive mode
 `--preset` answers one of the built-in question presets (`email`, `guard`, `moderation`, `router`,
 `triage`) instead of the router questions, and implies `--predict`.
 
-`--json` prints the raw result; `--model`/`--task`/`--device` force routing/device.
+`--json` prints the raw result; `--model`/`--task`/`--device` force routing/device. `--model`
+takes a checkpoint name or any of the router's aliases (`en`, `ml`, `td`, …) in any casing, or
+`auto` to route it (the default).
 
 ## HTTP server
 
@@ -106,8 +108,10 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 ```
 
 Config is via env vars (`LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`, `LAYA_PRELOAD`, `LAYA_MODELS`,
-`LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`). The wire shape matches TypeSafe Jev's
-`/v1/systemone`, so a Jev client can point `baseUrl` here unchanged.
+`LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`, `LAYA_MAX_CONCURRENT`, `LAYA_MAX_LOADED`).
+`LAYA_MAX_LOADED` (default 2) caps how many checkpoints stay resident at once; a value below what
+routing can choose reloads one per switch. The wire shape matches TypeSafe Jev's `/v1/systemone`,
+so a Jev client can point `baseUrl` here unchanged.
 
 ## Testing
 

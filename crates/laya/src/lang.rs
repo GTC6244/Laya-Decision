@@ -941,6 +941,14 @@ fn leaf_non_english(leaf: &str) -> Option<Analysis> {
     let mut best: Option<Analysis> = None;
     let mut best_n: i64 = -1;
     for line in leaf.split('\n') {
+        // A line this short cannot be selected, so skip it before the slice, `trim`, `_CODE_LINE`
+        // and a full `analyse_text` pass. Each branch below needs four `word_re` tokens or
+        // NON_LATIN_MIN_LETTERS letters; four tokens need three separators between them (seven
+        // characters) and ten letters need ten. Counted on the raw line in code points, matching
+        // upstream `len(line) < 7`.
+        if line.chars().count() < 7 {
+            continue;
+        }
         let sample: String = line.chars().take(4000).collect();
         if sample.trim().is_empty() || code_line_re().is_match(&sample) {
             continue;

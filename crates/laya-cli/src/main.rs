@@ -59,7 +59,8 @@ struct Cli {
     /// Run the full prediction, not just the routing decision (downloads the checkpoint on first use).
     #[arg(long)]
     predict: bool,
-    /// Force a checkpoint instead of auto-routing (english, multilingual, typed-decisions).
+    /// Force a checkpoint instead of auto-routing: a checkpoint name or any of the router's
+    /// aliases (en, ml, td, ...), in any casing, or 'auto' to route it (the default).
     #[arg(long)]
     model: Option<String>,
     /// Force a language, e.g. en or de, instead of detecting it.
@@ -90,7 +91,13 @@ fn make_router(cli: &Cli) -> Router {
 
 fn hints(cli: &Cli) -> RouteHints<'_> {
     RouteHints {
-        model: cli.model.as_deref(),
+        // `--model auto` means "do not pin one", exactly as omitting the flag does, so it maps to
+        // None; any other value (a name or an alias like `en`) reaches `route`, which resolves it
+        // through `normalise_name` (upstream cli `model_name`).
+        model: cli
+            .model
+            .as_deref()
+            .filter(|m| !m.trim().eq_ignore_ascii_case("auto")),
         task: cli.task.as_deref(),
         lang: cli.lang.as_deref(),
         lang_guess: None,
