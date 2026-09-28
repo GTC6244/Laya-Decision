@@ -494,16 +494,53 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
             // label, rather than letting it be JSON-stringified into a key (upstream #425). The dict
             // form (JSON object) cannot hit this: its keys are strings by construction.
             if let Some(Value::Array(a)) = crit {
+                // Each list label becomes an answer key exactly as `to_internal` builds it: a string
+                // stays itself, anything else is rendered with `py_json`. Two labels that land on
+                // one key made the model score fewer options than the caller wrote and the response
+                // carry fewer probabilities, without a word — the same silent-shape class as the
+                // type and null checks (upstream #425 duplicate-label fix). Detected on the rendered
+                // key, which is what Rust actually uses to distinguish options.
+                let mut seen: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 for (i, label) in a.iter().enumerate() {
                     let kind = match label {
                         Value::Array(_) => "list",
                         Value::Object(_) => "object",
-                        _ => continue,
+                        // A null label is neither valid option text nor a usable answer key: it
+                        // would render as the text "null" while its key is the JSON string "null",
+                        // so a client cannot tell it from the string "null". `""` is left alone,
+                        // because unlike a null it round-trips (upstream: reject a null label).
+                        Value::Null => {
+                            return Err(LayaError::InvalidQuestion(format!(
+                                "question {:?}: choice label {} is null; a label is rendered as \
+                                 option text and used as the answer key, so it must be a string, \
+                                 number or bool",
+                                qid, i
+                            )));
+                        }
+                        _ => {
+                            let key = label
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| crate::common::py_json(label));
+                            if let Some(&first) = seen.get(&key) {
+                                return Err(LayaError::InvalidQuestion(format!(
+                                    "question {:?}: choice label {} ({}) repeats label {}; the \
+                                     labels are the answer keys, so every option needs its own",
+                                    qid,
+                                    i,
+                                    crate::common::py_json(label),
+                                    first
+                                )));
+                            }
+                            seen.insert(key, i);
+                            continue;
+                        }
                     };
                     return Err(LayaError::InvalidQuestion(format!(
                         "question {:?}: choice label {} is a {}; a label is rendered as option text \
                          and used as the answer key, so it must be a scalar (a string, number or \
-                         null), got {}",
+                         bool), got {}",
                         qid,
                         i,
                         kind,
@@ -741,12 +778,35 @@ mod tests {
 
     #[test]
     fn accepts_scalar_choice_labels() {
-        // Strings, numbers and null are all valid answer keys.
+        // Strings, numbers and bools are all valid answer keys.
         let q = json!({"type": "choice", "instructions": "route",
-                       "criteria": ["billing", 2, null]});
+                       "criteria": ["billing", 2, true]});
         assert!(check_question("dept", &q).is_ok());
         let q = json!({"type": "choice", "instructions": "route",
                        "criteria": {"billing": "money", "tech": "bugs"}});
         assert!(check_question("dept", &q).is_ok());
+    }
+
+    #[test]
+    fn rejects_null_choice_label() {
+        // A null label renders as the text "null" while its answer key is the JSON string "null",
+        // so a client cannot tell it from the string "null"; reject it (upstream signoff/label fix).
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": ["billing", null]});
+        let msg = check_question("dept", &q).unwrap_err().to_string();
+        assert!(msg.contains("choice label 1 is null"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_duplicate_choice_labels() {
+        // Two labels that land on one answer key make the model score fewer options than were
+        // written and the response carry fewer probabilities, silently (upstream #425 duplicate fix).
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": ["billing", "tech", "billing"]});
+        let msg = check_question("dept", &q).unwrap_err().to_string();
+        assert!(
+            msg.contains("choice label 2") && msg.contains("repeats label 0"),
+            "got: {msg}"
+        );
     }
 }
