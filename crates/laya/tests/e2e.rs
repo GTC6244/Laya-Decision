@@ -6,6 +6,12 @@
 //!
 //! Opt-in (needs network + weights + the reference file):
 //!   cargo test -p laya --release --test e2e -- --ignored --nocapture
+//!
+//! `LAYA_TEST_DEVICE` selects the backend, so the same parity gate can gate a GPU build. Building
+//! with the backend's feature off falls back to CPU, so check the printed line before trusting a
+//! green run:
+//!   LAYA_TEST_DEVICE=cuda cargo test -p laya-decision --release --features cuda \
+//!       --test e2e -- --ignored --nocapture
 #![cfg(feature = "model")]
 
 use laya::agent::{Agent, LoadOptions};
@@ -57,10 +63,14 @@ fn check_checkpoint(stem: &str, max_diff: &mut f64, mismatches: &mut Vec<String>
     };
     let rows: Vec<Value> = serde_json::from_slice(&bytes).expect("valid e2e json");
     let (repo, subfolder) = checkpoint_repo(stem);
+    let device = std::env::var("LAYA_TEST_DEVICE")
+        .ok()
+        .filter(|d| !d.is_empty());
     let agent = Agent::load(
         repo,
         LoadOptions {
             subfolder,
+            device: device.clone(),
             ..Default::default()
         },
     )
@@ -127,6 +137,25 @@ fn compare_numbers(
 #[test]
 #[ignore = "needs weights + a torch reference; run with --ignored"]
 fn e2e_parity() {
+    let requested = std::env::var("LAYA_TEST_DEVICE").unwrap_or_else(|_| "cpu".into());
+    println!("e2e parity: requested device = {requested:?}");
+    // Without the feature the backend silently degrades to CPU, so a green run would be CPU
+    // numbers wearing a CUDA label. Fail instead of reporting a parity result for another device.
+    let name = requested.trim().to_lowercase();
+    let missing = |f: &str| {
+        format!(
+            "LAYA_TEST_DEVICE={requested:?} but the `{f}` feature is not enabled for \
+             laya-decision; rebuild with `--features {f}` or the run silently tests CPU"
+        )
+    };
+    // `cfg!` folds at compile time, which is the intent: this asserts the build carries the
+    // feature, so a missing feature fails the run instead of quietly producing CPU numbers.
+    #[allow(clippy::assertions_on_constants)]
+    if name == "cuda" {
+        assert!(cfg!(feature = "cuda"), "{}", missing("cuda"));
+    } else if name == "metal" {
+        assert!(cfg!(feature = "metal"), "{}", missing("metal"));
+    }
     let mut max_diff = 0.0f64;
     let mut mismatches = Vec::new();
     let mut ran = false;
@@ -137,7 +166,7 @@ fn e2e_parity() {
         eprintln!("e2e_parity: no reference files found; nothing checked.");
         return;
     }
-    println!("e2e parity: max |Δ| = {max_diff:.6} (tolerance {TOL})");
+    println!("e2e parity: max |Δ| = {max_diff:.6} (tolerance {TOL}) on {requested}");
     assert!(
         mismatches.is_empty(),
         "e2e parity mismatches ({}):\n{}",

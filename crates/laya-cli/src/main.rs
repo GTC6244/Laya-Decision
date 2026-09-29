@@ -73,7 +73,7 @@ struct Cli {
     /// instead of the router questions; implies --predict.
     #[arg(long, value_name = "NAME", value_parser = PRESETS)]
     preset: Option<String>,
-    /// Compute device, e.g. cpu or metal.
+    /// Compute device, e.g. cpu, metal or cuda (needs the matching crate feature).
     #[arg(long)]
     device: Option<String>,
     /// Print the raw result as JSON.

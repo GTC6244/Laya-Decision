@@ -35,6 +35,8 @@ default = ["model"]
 model = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub"]
 # Metal GPU backend (Apple Silicon). Enables `LoadOptions.device = "metal"`.
 metal = ["model", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# CUDA GPU backend (candle/cudarc). Enables `LoadOptions.device = "cuda"`.
+cuda = ["model", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [[example]]
 name = "predict"

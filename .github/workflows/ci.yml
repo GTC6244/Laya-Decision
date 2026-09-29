@@ -43,3 +43,46 @@ jobs:
       # No model weights or network needed (the `model` feature is off).
       - name: Tests (pure logic + parity)
         run: cargo test -p laya-decision --no-default-features
+
+  cuda:
+    name: cuda feature build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      # cudarc builds kernels with nvcc and links cudart/cublas, so the toolkit must be present.
+      # candle enables cudarc's `cuda-version-from-build-system`, so the pinned version below is
+      # what the build detects — no per-version feature flags to keep in sync here.
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.4'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "cublas", "cublas-dev", "curand", "nvrtc", "nvrtc-dev"]'
+
+      - name: Expose CUDA to the linker
+        run: echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda
+
+      # Compile-only gate: the runner has no GPU, so this proves the feature still builds and lints
+      # clean, not that inference works. The numerics are gated by the `#[ignore]`d e2e run
+      # (LAYA_TEST_DEVICE=cuda) on a GPU host.
+      - name: Clippy (cuda)
+        run: cargo clippy -p laya-decision --features cuda --all-targets -- -D warnings
+
+      # Runs the device-dispatch unit tests under the feature. `Device::new_cuda(0)` fails without
+      # a driver, which `resolve_device` turns into a CPU fallback that the tests accept.
+      - name: Tests (cuda)
+        run: cargo test -p laya-decision --features cuda --lib
