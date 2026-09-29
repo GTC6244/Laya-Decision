@@ -14,6 +14,7 @@
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
 //! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
+//! | `LAYA_INFERENCE_CONCURRENCY` | forward passes run in parallel | 1       |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -65,6 +66,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[derive(Clone)]
 struct AppState {
     router: Arc<Router>,
+    /// Forward passes run at once, each holding a permit for the duration of its blocking
+    /// inference. Raising this trades memory for throughput: peak activation memory scales with
+    /// the permit count, so a value that helps on a GPU can OOM a small host.
     gate: Arc<Semaphore>,
     /// Non-blocking admission bound on in-flight requests, held from just after auth through the
     /// response so many buffered bodies cannot pile up behind the single inference gate (#330).
@@ -386,9 +390,10 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "cpu".to_string());
     let max_concurrent = env_usize("LAYA_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT);
+    let inference_concurrency = env_usize("LAYA_INFERENCE_CONCURRENCY", 1);
     let app_state = AppState {
         router: Arc::new(build_router()),
-        gate: Arc::new(Semaphore::new(1)),
+        gate: Arc::new(Semaphore::new(inference_concurrency)),
         admission: Arc::new(Semaphore::new(max_concurrent)),
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,

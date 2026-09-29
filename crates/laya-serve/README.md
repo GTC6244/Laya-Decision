@@ -20,7 +20,13 @@ Endpoints: `POST /v1/systemone` (TypeSafe Jev wire protocol — `{model, answers
 and `GET /health`. The `Router` auto-selects the English or multilingual checkpoint per request.
 
 Configuration is via environment variables: `LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`
-(`cpu`/`metal`), `LAYA_PRELOAD`, `LAYA_MODELS`, `LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`.
+(`cpu`/`metal`), `LAYA_PRELOAD`, `LAYA_MODELS`, `LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`,
+`LAYA_MAX_CONCURRENT`, `LAYA_INFERENCE_CONCURRENCY`.
+
+`LAYA_MAX_CONCURRENT` (default 16) bounds admitted requests, shedding the excess with 503.
+`LAYA_INFERENCE_CONCURRENCY` (default 1) bounds how many forward passes run at once. The default
+serialises inference; raise it on CPU, where one pass leaves a many-core host mostly idle, and
+leave it at 1 on a GPU, which one pass already saturates.
 
 See the [repository](https://github.com/GTC6244/Laya-Decision) for the library
 ([`laya-decision`](https://crates.io/crates/laya-decision)) and the CLI
