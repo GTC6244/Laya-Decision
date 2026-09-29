@@ -3,6 +3,34 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## Unreleased
+
+### Added
+- **CUDA GPU backend (`cuda` feature).** `LoadOptions.device = "cuda"` (or `LAYA_DEVICE=cuda` to
+  `laya-serve`, `--device cuda` to the CLI) runs inference on an NVIDIA GPU through candle's
+  CUDA backend, mirroring the existing `metal` feature. The device string is trimmed and matched
+  case-insensitively; an unknown name, a backend that was not compiled in, or a machine with no
+  usable device all fall back to CPU with a message on stderr, as `metal` already did. Compiling
+  the feature needs the CUDA toolkit on the build host (cudarc builds kernels with `nvcc`).
+- **CI job for the `cuda` feature.** `check` only ever built the CPU backend, so the feature could
+  rot unnoticed. A separate job installs the CUDA toolkit, runs `clippy -D warnings` with
+  `--features cuda`, and runs the unit tests under that feature. It is a compile-and-lint gate
+  only — the runner has no GPU, so inference numerics are not covered there.
+- **Device-parameterized e2e parity.** `LAYA_TEST_DEVICE` selects the backend for the existing
+  `#[ignore]`d e2e test, so the same golden-vs-PyTorch gate can run on a GPU. The test fails if
+  the requested backend's feature is not enabled, so a CPU run cannot be reported as a GPU pass.
+  All three checkpoints match the reference to `max |Δ| = 1e-4` on CUDA, the same as on CPU.
+
+### Changed
+- **Device-name dispatch is now a separate function.** `resolve_device` delegated its string
+  normalization to a match on the raw `&str`; the new `requested_backend` returns a `Backend` so
+  the mapping can be unit-tested without a GPU present. No behaviour change.
+
+### Fixed
+- **GPU backends are documented outside the root README.** `LAYA_DEVICE` was listed as
+  `cpu`/`metal` in the server README and the CLI help omitted the backend list, so there was no
+  in-repo way to discover a backend other than Metal.
+
 ## 0.2.3 — tracks upstream Laya 0.3.21 (upstream @9d95567)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @4066d5d) that affect the

@@ -4,7 +4,8 @@ A **pure-Rust port** of [Laya](https://github.com/NandhaKishorM/laya) — a mult
 non-autoregressive *System-1 decision engine*. Given a **state** (text, JSON, or a conversation
 list) and a set of **typed questions** (`choice`, `score`, `noul`), it scores every question in a
 **single forward pass** — no text generation. Inference runs natively on
-[candle](https://github.com/huggingface/candle) (CPU or Apple-Silicon Metal); routing, language
+[candle](https://github.com/huggingface/candle) (CPU, Apple-Silicon Metal, or NVIDIA CUDA);
+routing, language
 detection, email cleaning, presets and shortlist are dependency-free.
 
 > The crate is published as **`laya-decision`** (the name `laya` was taken) but is imported as
@@ -28,7 +29,8 @@ println!("{}", serde_json::to_string_pretty(&result.to_json())?);
 
 The candle backend matches the upstream PyTorch model to within `1e-4` across all three
 checkpoints (English ModernBERT-large, multilingual mmBERT-base, typed-decisions). Enable the
-`metal` feature for Apple-Silicon GPU; disable default features for the weight-free pure-logic
+`metal` feature for Apple-Silicon GPU or `cuda` for NVIDIA (requires the CUDA toolkit at build
+time); disable default features for the weight-free pure-logic
 subset (routing, language detection, email cleaning).
 
 See the [repository](https://github.com/GTC6244/Laya-Decision) for the HTTP server

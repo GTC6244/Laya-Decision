@@ -15,8 +15,9 @@ dependency-free.
 > presets, sequence construction) is verified byte-for-byte against the upstream Python
 > package. The candle backend runs the real `convaiinnovations/laya` checkpoint and matches
 > PyTorch end-to-end within **1e-4** (the 4-decimal precision Laya publishes) — see
-> [Testing](#testing). Runs on CPU and on **Apple Silicon GPU via Metal** (`--features metal`,
-> ~4× faster forward on an M4).
+> [Testing](#testing). Runs on CPU, on **Apple Silicon GPU via Metal** (`--features metal`,
+> ~4× faster forward on an M4), and on **NVIDIA GPU via CUDA** (`--features cuda`, ~32×
+> faster forward on an RTX 4070 Ti).
 
 ## Question types
 
@@ -143,6 +144,31 @@ LAYA_DEVICE=metal cargo run --release --features metal --example predict
 ```
 
 Pass `device: Some("metal".into())` to `LoadOptions` (or `LAYA_DEVICE=metal` to `laya-serve`).
+
+### NVIDIA (CUDA)
+
+```bash
+LAYA_DEVICE=cuda cargo run --release --features cuda --example predict
+```
+
+Pass `device: Some("cuda".into())` to `LoadOptions` (or `LAYA_DEVICE=cuda` to `laya-serve`).
+
+The `cuda` feature turns on candle's CUDA backend, which compiles kernels through
+[cudarc](https://github.com/eklitzke/cudarc) and needs the [CUDA toolkit](https://developer.nvidia.com/cuda-toolkit)
+on the build host — there is no prebuilt path, so the crate will not build without `nvcc`.
+An unknown device name, or a request for a backend that is not compiled in or has no device,
+falls back to CPU with a message on stderr rather than failing.
+
+Gate the numerics against the PyTorch reference on a CUDA host with the same e2e test CPU uses:
+
+```bash
+LAYA_TEST_DEVICE=cuda cargo test -p laya-decision --release --features cuda \
+    --test e2e -- --ignored --nocapture
+```
+
+This prints the device it ran on and fails if the `cuda` feature was not enabled, so a green run
+cannot be a CPU run in disguise. On an RTX 4070 Ti all three checkpoints match the reference to
+`max |Δ| = 1e-4`, the same as CPU.
 
 ## Attribution & license
 

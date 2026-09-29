@@ -20,7 +20,7 @@ Endpoints: `POST /v1/systemone` (TypeSafe Jev wire protocol — `{model, answers
 and `GET /health`. The `Router` auto-selects the English or multilingual checkpoint per request.
 
 Configuration is via environment variables: `LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`
-(`cpu`/`metal`), `LAYA_PRELOAD`, `LAYA_MODELS`, `LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`.
+(`cpu`/`metal`/`cuda`), `LAYA_PRELOAD`, `LAYA_MODELS`, `LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`.
 
 See the [repository](https://github.com/GTC6244/Laya-Decision) for the library
 ([`laya-decision`](https://crates.io/crates/laya-decision)) and the CLI
