@@ -19,7 +19,9 @@ use crate::{Questions, State};
 /// Options for [`Agent::load`].
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
-    /// Compute device: `None`/`"cpu"` for CPU (the only backend built by default).
+    /// Compute device: `None`/`"cpu"` for CPU (the only backend built by default), `"cuda"` with
+    /// the `cuda` feature, `"metal"` with the `metal` feature. Unavailable or unrecognised values
+    /// fall back to CPU.
     pub device: Option<String>,
     /// Hugging Face token (falls back to `HF_TOKEN`).
     pub token: Option<String>,
@@ -402,9 +404,26 @@ fn load_temperature_by_options(cfg: &Value) -> std::collections::HashMap<String,
         .unwrap_or_default()
 }
 
-fn resolve_device(device: Option<&str>) -> Device {
+/// Which backend a `device` string asks for. Split out from `resolve_device` so the name
+/// normalization is testable without a GPU present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Cpu,
+    Metal,
+    Cuda,
+}
+
+fn requested_backend(device: Option<&str>) -> Backend {
     match device.map(|d| d.trim().to_lowercase()).as_deref() {
-        Some("metal") => {
+        Some("metal") => Backend::Metal,
+        Some("cuda") => Backend::Cuda,
+        _ => Backend::Cpu,
+    }
+}
+
+fn resolve_device(device: Option<&str>) -> Device {
+    match requested_backend(device) {
+        Backend::Metal => {
             #[cfg(feature = "metal")]
             {
                 match Device::new_metal(0) {
@@ -426,8 +445,29 @@ fn resolve_device(device: Option<&str>) -> Device {
                 Device::Cpu
             }
         }
-        // "cuda" and other accelerators are follow-ups; everything else runs on CPU.
-        _ => Device::Cpu,
+        Backend::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                match Device::new_cuda(0) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!(
+                            "laya: CUDA requested but unavailable ({e}); falling back to CPU."
+                        );
+                        Device::Cpu
+                    }
+                }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!(
+                    "laya: device=\"cuda\" requested but the crate was built without the `cuda` \
+                     feature; using CPU. Rebuild with --features cuda."
+                );
+                Device::Cpu
+            }
+        }
+        Backend::Cpu => Device::Cpu,
     }
 }
 
@@ -745,6 +785,7 @@ fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::DeviceLocation;
 
     #[test]
     fn rejects_null_score_level() {
@@ -759,6 +800,67 @@ mod tests {
     fn accepts_fully_described_score_levels() {
         let q = json!({"type": "score", "instructions": "rate", "criteria": ["low", "high"]});
         assert!(check_question("s", &q).is_ok());
+    }
+
+    // Device dispatch. The positive "cuda gave me a CUDA device" case needs real hardware, so it
+    // lives in `tests/e2e.rs` (`LAYA_TEST_DEVICE=cuda`, `#[ignore]`d); these lock the part that must
+    // hold on any machine — the name routes to the backend it names, not to the catch-all.
+
+    #[test]
+    fn device_defaults_to_cpu() {
+        assert_eq!(requested_backend(None), Backend::Cpu);
+    }
+
+    #[test]
+    fn device_name_is_trimmed_and_case_insensitive() {
+        // `LAYA_DEVICE=CUDA` must reach the cuda arm, not fall through to the cpu catch-all.
+        for spelling in ["cuda", "CUDA", " cuda ", "\tCuda\n"] {
+            assert_eq!(
+                requested_backend(Some(spelling)),
+                Backend::Cuda,
+                "{spelling:?} should select the cuda backend"
+            );
+        }
+        for spelling in ["metal", "Metal", " metal "] {
+            assert_eq!(
+                requested_backend(Some(spelling)),
+                Backend::Metal,
+                "{spelling:?} should select the metal backend"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_device_falls_back_to_cpu() {
+        // The catch-all must stay total: a typo is a slow CPU run, not a panic on a bad config.
+        for spelling in ["tpu", "rocm", "gpu", "cuda:0", "cpu", ""] {
+            assert_eq!(
+                requested_backend(Some(spelling)),
+                Backend::Cpu,
+                "{spelling:?} is not a backend and must fall back to cpu"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "cuda"))]
+    fn cuda_requested_without_the_feature_falls_back_to_cpu() {
+        // Matches the metal arm's contract: unavailable backend degrades, it does not refuse.
+        assert_eq!(resolve_device(Some("cuda")).location(), DeviceLocation::Cpu);
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_requested_with_the_feature_does_not_panic() {
+        // `Device::new_cuda(0)` succeeds only with a driver and device 0, so both outcomes pass.
+        let d = resolve_device(Some("cuda"));
+        assert!(
+            matches!(
+                d.location(),
+                DeviceLocation::Cpu | DeviceLocation::Cuda { .. }
+            ),
+            "expected CPU or CUDA, got {d:?}"
+        );
     }
 
     #[test]
