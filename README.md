@@ -108,10 +108,19 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 ```
 
 Config is via env vars (`LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`, `LAYA_PRELOAD`, `LAYA_MODELS`,
-`LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`, `LAYA_MAX_CONCURRENT`, `LAYA_MAX_LOADED`).
+`LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`, `LAYA_MAX_CONCURRENT`,
+`LAYA_INFERENCE_CONCURRENCY`, `LAYA_MAX_LOADED`).
 `LAYA_MAX_LOADED` (default 2) caps how many checkpoints stay resident at once; a value below what
-routing can choose reloads one per switch. The wire shape matches TypeSafe Jev's `/v1/systemone`,
-so a Jev client can point `baseUrl` here unchanged.
+routing can choose reloads one per switch. The wire shape matches TypeSafe Jev's
+`/v1/systemone`, so a Jev client can point `baseUrl` here unchanged.
+
+Two independent bounds govern concurrency. `LAYA_MAX_CONCURRENT` (default 16) caps how many
+requests are *admitted*; the excess gets 503 rather than buffering. `LAYA_INFERENCE_CONCURRENCY`
+(default 1) sets how many forward passes run *in parallel*. The default of 1 serialises inference,
+so a burst of requests queues behind a single worker. On CPU that is usually the wrong trade — a
+single forward pass does not saturate a many-core host, so raising it multiplies throughput for a
+small, bounded memory cost. On a GPU, leave it at 1: one pass already saturates the device, and
+extra concurrency does not add throughput while making tail latency worse.
 
 ## Testing
 

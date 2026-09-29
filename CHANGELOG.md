@@ -3,6 +3,17 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## Unreleased
+
+### Added
+- **`laya-serve` honours `LAYA_INFERENCE_CONCURRENCY`** (default 1): how many forward passes run
+  in parallel. The single-permit gate was a hard-coded `Semaphore::new(1)`, so a burst of requests
+  serialised behind one worker no matter how much headroom the host had. Raising it on CPU
+  multiplies throughput for a small bounded memory cost — measured 6.8× at 8 permits on a 32-core
+  host, for +10% peak RSS. On a GPU the default of 1 should be kept: one pass already saturates the
+  device, and extra permits add no throughput while making tail latency worse. This is independent
+  of `LAYA_MAX_CONCURRENT` (default 16), which bounds admitted requests and sheds 503.
+
 ## 0.2.3 — tracks upstream Laya 0.3.21 (upstream @9d95567)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @4066d5d) that affect the
