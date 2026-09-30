@@ -125,6 +125,25 @@ fn resolve_model(model: Option<&str>) -> Option<String> {
     }
 }
 
+/// A `lang` / `lang_guess` body value: a language code string, or absent/null. A non-string (a
+/// JSON bool or number) is a 422 — routing stringifies the hint through `english_from_code`, so a
+/// bare `true` would become the real code `"true"` and decide the checkpoint. Explicit `null` stays
+/// "no hint", which lets a deployment's `Router(lang_guess=...)` answer (upstream
+/// `_validate_language_param`).
+fn validate_lang(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, (StatusCode, Json<Value>)> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("{key} must be a language code string such as \"de\", or null"),
+        )),
+    }
+}
+
 fn build_router() -> Router {
     let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty());
     // Checkpoints kept resident at once (upstream `LAYA_MAX_LOADED`, default 2 — the number
@@ -295,9 +314,13 @@ async fn systemone(
             ),
         ));
     }
+    // Measured on the text the tokenizer receives — `serialize_state`, which is the string itself
+    // for a string state and `", "`/`": "`-separated JSON for a dict or list — not `to_string()`'s
+    // compact form. The cap therefore counts the same characters the model is charged for, in both
+    // directions (upstream: measure the state limit on the tokenizer's text).
     let state_len = match &state {
         Value::String(s) => s.chars().count(),
-        other => other.to_string().chars().count(),
+        other => laya::common::serialize_state(other).chars().count(),
     };
     if state_len > MAX_STATE_CHARS {
         return Err(err(
@@ -313,6 +336,38 @@ async fn systemone(
     // Kept for the server-side log below: `model` itself is moved into the blocking task.
     let model_log = model.clone();
 
+    // Forward the routing controls a JSON body can carry, each only when the client sent it, so an
+    // absent field still inherits what the Router was built with (upstream BODY_CONTROLS). `hooks`,
+    // `min_confidence` and a token budget have no counterpart on the single-request Rust surface.
+    // `task` is honoured, rejecting an unknown one as 422 the way core's ValueError surfaces
+    // upstream; `lang` / `lang_guess` must be a code string, since a bool or number would be
+    // stringified into a real, non-English code and decide the checkpoint.
+    let task = match obj.get("task") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let normalized = if s.to_lowercase().replace('-', "_") == "typed_decisions" {
+                "typed-decisions".to_string()
+            } else {
+                s.clone()
+            };
+            if normalise_name(&normalized).is_err() {
+                return Err(err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("unknown task {s:?}"),
+                ));
+            }
+            Some(s.clone())
+        }
+        Some(_) => {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "'task' must be a string",
+            ))
+        }
+    };
+    let lang = validate_lang(obj, "lang")?;
+    let lang_guess = validate_lang(obj, "lang_guess")?;
+
     let router = app.router.clone();
     // One forward pass at a time: hold a permit across the blocking inference.
     let permit = app
@@ -326,7 +381,9 @@ async fn systemone(
         let _permit = permit;
         let hints = RouteHints {
             model: model.as_deref(),
-            ..Default::default()
+            task: task.as_deref(),
+            lang: lang.as_deref(),
+            lang_guess: lang_guess.as_deref(),
         };
         router
             .predict(&state, &questions, &hints)

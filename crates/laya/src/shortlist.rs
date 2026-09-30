@@ -204,6 +204,7 @@ fn option_texts(criteria: &Value) -> Result<Vec<String>> {
         ins: String::new(),
         crit: normalize_choice_crit(criteria),
         labels: None,
+        option_order: None,
     };
     render_options(&q)
 }

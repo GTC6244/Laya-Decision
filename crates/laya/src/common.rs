@@ -60,6 +60,10 @@ pub struct InternalQ {
     pub ins: String,
     pub crit: Value,
     pub labels: Option<Value>,
+    /// Optional display order: slot `s` shows option `option_order[s]`. A permutation of
+    /// `range(n)` over the question's options, or `None` for the canonical order. Mirrors the
+    /// `option_order` key upstream `Agent._to_internal` stores.
+    pub option_order: Option<Vec<usize>>,
 }
 
 /// Abstraction over a checkpoint tokenizer. Mirrors `TokenizerLike` in laya-ts.
@@ -359,6 +363,26 @@ pub fn answer_confidence(p: &[f64], k: usize) -> f64 {
     max.clamp(0.0, 1.0)
 }
 
+/// Put a slot-ordered probability row back into the caller's option order.
+///
+/// [`build_sequence`] puts option `option_order[s]` in slot `s`, so a model row comes back indexed
+/// by slot. Everything downstream indexes by option (`zip(keys, p)` for a choice, `i * p` for a
+/// score level, `p[1]` for noul-true), so the row has to be inverted first or the probabilities end
+/// up attached to the wrong options, which is silent. A missing or mismatched order returns `p`
+/// unchanged, so the canonical path is untouched. Mirrors `unpermute_probs` in `laya/common.py`.
+pub fn unpermute_probs(p: &[f64], option_order: Option<&[usize]>) -> Vec<f64> {
+    match option_order {
+        Some(order) if order.len() == p.len() => {
+            let mut canonical = vec![0.0; p.len()];
+            for (slot, &opt) in order.iter().enumerate() {
+                canonical[opt] = p[slot];
+            }
+            canonical
+        }
+        _ => p.to_vec(),
+    }
+}
+
 /// Normalized Shannon-entropy confidence: `1 - H(p)/log(k)`, clamped to `[0, 1]`.
 /// `p` is expected to already hold the `k` option probabilities.
 pub fn confidence_from_probs(p: &[f64], k: usize) -> f64 {
@@ -537,6 +561,7 @@ mod tests {
             ins: String::new(),
             crit: json!({"a": "first", "b": null, "c": ""}),
             labels: None,
+            option_order: None,
         };
         assert_eq!(render_options(&choice).unwrap(), vec!["a: first", "b", "c"]);
 
@@ -545,6 +570,7 @@ mod tests {
             ins: String::new(),
             crit: json!(["low", "high"]),
             labels: None,
+            option_order: None,
         };
         assert_eq!(
             render_options(&score).unwrap(),
@@ -556,6 +582,7 @@ mod tests {
             ins: String::new(),
             crit: json!({"true": "yes it does", "false": "no"}),
             labels: None,
+            option_order: None,
         };
         assert_eq!(
             render_options(&noul).unwrap(),
@@ -567,6 +594,7 @@ mod tests {
             ins: String::new(),
             crit: Value::Null,
             labels: None,
+            option_order: None,
         };
         assert_eq!(
             render_options(&noul_default).unwrap(),
@@ -592,6 +620,7 @@ mod tests {
             ins: "pick one".to_string(),
             crit: json!({"a": null, "b": null}),
             labels: None,
+            option_order: None,
         };
         let (ids, markers) =
             build_sequence(&Fake, &json!("some state text"), &q, 512, 192, None, false).unwrap();
@@ -611,5 +640,46 @@ mod tests {
         assert!(uniform.abs() < 1e-9); // max entropy -> confidence 0
         let certain = confidence_from_probs(&[1.0, 0.0], 2);
         assert!((certain - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unpermute_inverts_slot_order() {
+        // Slot 0 shows option 2, slot 1 shows option 0, slot 2 shows option 1. The row is indexed
+        // by slot; unpermuting attaches each slot's mass to the option it showed.
+        let p = [0.7, 0.2, 0.1];
+        let order = [2usize, 0, 1];
+        assert_eq!(unpermute_probs(&p, Some(&order)), vec![0.2, 0.1, 0.7]);
+        // No order, or a length mismatch, leaves the row untouched.
+        assert_eq!(unpermute_probs(&p, None), vec![0.7, 0.2, 0.1]);
+        assert_eq!(unpermute_probs(&p, Some(&[0usize, 1])), vec![0.7, 0.2, 0.1]);
+    }
+
+    #[test]
+    fn build_sequence_honours_option_order() {
+        // With options aa, b, ccc and order [2, 1, 0], the option block runs ccc, b, aa. The Fake
+        // tokenizer maps a word to `100 + len`, so options of distinct lengths land on distinct ids
+        // and the reordered block is observable.
+        let q = InternalQ {
+            t: QType::Choice,
+            ins: "pick one".to_string(),
+            crit: json!({"aa": null, "b": null, "ccc": null}),
+            labels: None,
+            option_order: Some(vec![2, 1, 0]),
+        };
+        let (ids, markers) = build_sequence(
+            &Fake,
+            &json!("state"),
+            &q,
+            512,
+            192,
+            Some(&[2, 1, 0]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(markers.len(), 3);
+        // The token right after each [MASK] marker is the shown option's word: slot 0 shows ccc
+        // (id 103) and slot 2 shows aa (id 102), so the two ends differ.
+        assert_eq!(ids[markers[0] + 1], 103);
+        assert_eq!(ids[markers[2] + 1], 102);
     }
 }
