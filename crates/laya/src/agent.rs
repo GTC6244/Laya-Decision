@@ -9,7 +9,8 @@ use serde_json::{json, Map, Value};
 
 use crate::common::{
     answer_confidence, build_sequence, clamp_temperature, collate_items, confidence_from_probs,
-    render_options, round4, softmax, temp_bucket, InternalQ, Item, QType,
+    render_criterion, render_options, round4, softmax, temp_bucket, unpermute_probs, InternalQ,
+    Item, QType,
 };
 use crate::error::{LayaError, Result};
 use crate::model::DecisionModel;
@@ -251,7 +252,7 @@ impl Agent {
                 q,
                 self.max_len,
                 self.head_max_len,
-                None,
+                q.option_order.as_deref(),
                 truncate_left,
             )?;
             if markers.len() != render_options(q)?.len() {
@@ -290,6 +291,9 @@ impl Agent {
 
             let z: Vec<f64> = logits[r][..k].iter().map(|&v| v as f64 / t_scale).collect();
             let p = softmax(&z);
+            // The row comes back in slot order; everything below indexes by option, so invert the
+            // permutation first when the question chose a display order (upstream unpermute_probs).
+            let p = unpermute_probs(&p, q.option_order.as_deref());
             let conf = round4(confidence_from_probs(&p, k));
             // `confidence` means one thing for `noul` (max(p)) and another for `choice`/`score`
             // (normalized entropy), and only the first is the quantity temperature scaling fits and
@@ -325,13 +329,18 @@ impl Agent {
                 }
                 QType::Score => {
                     let exp: f64 = p.iter().enumerate().map(|(i, &v)| i as f64 * v).sum();
+                    // A legend maps an index to the text of a level. `render_criterion` rather than
+                    // the raw value: a dict or list level comes back as the same JSON text the model
+                    // was shown, and a numeric scale passed as `[1, 2, 3]` comes back as strings, so
+                    // the response's JSON types no longer depend on what the caller happened to pass
+                    // — `probabilities` stringifies its keys right below (upstream render_criterion).
                     let legend: Map<String, Value> = q
                         .crit
                         .as_array()
                         .map(|a| {
                             a.iter()
                                 .enumerate()
-                                .map(|(i, c)| (i.to_string(), c.clone()))
+                                .map(|(i, c)| (i.to_string(), Value::String(render_criterion(c))))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -433,6 +442,15 @@ fn resolve_device(device: Option<&str>) -> Device {
 
 /// Validate a question definition, matching `Agent._check_question`.
 fn check_question(qid: &str, qdef: &Value) -> Result<()> {
+    // A blank id cannot name an answer back to the caller (upstream: reject an empty question id).
+    // Rust JSON object keys are always strings, so the None / non-str cases upstream also guards do
+    // not arise here.
+    if qid.trim().is_empty() {
+        return Err(LayaError::InvalidQuestion(format!(
+            "question id must be a non-empty string, got {:?}",
+            qid
+        )));
+    }
     let obj = match qdef {
         Value::Object(m) => m,
         other => {
@@ -466,6 +484,36 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
             "question {:?}: no 'instructions'; add the text the model should answer",
             qid
         )));
+    }
+    // A present-but-unusable `instructions` is the same silent-shape class as a null/duplicate
+    // label: `null` would be serialized as the text "null", and an empty string/list/dict gives
+    // the model nothing to answer. A number or bool is left alone (upstream instructions validation).
+    match obj.get("instructions") {
+        Some(Value::Null) => {
+            return Err(LayaError::InvalidQuestion(format!(
+                "question {:?}: 'instructions' must not be None; add the text the model should answer",
+                qid
+            )));
+        }
+        Some(Value::String(s)) if s.trim().is_empty() => {
+            return Err(LayaError::InvalidQuestion(format!(
+                "question {:?}: 'instructions' must not be empty; add the text the model should answer",
+                qid
+            )));
+        }
+        Some(Value::Array(a)) if a.is_empty() => {
+            return Err(LayaError::InvalidQuestion(format!(
+                "question {:?}: 'instructions' must not be empty; add the text the model should answer",
+                qid
+            )));
+        }
+        Some(Value::Object(m)) if m.is_empty() => {
+            return Err(LayaError::InvalidQuestion(format!(
+                "question {:?}: 'instructions' must not be empty; add the text the model should answer",
+                qid
+            )));
+        }
+        _ => {}
     }
     let crit = obj.get("criteria");
     match t {
@@ -600,6 +648,37 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
             }
         }
     }
+    if let Some(order) = obj.get("option_order") {
+        // Slot s shows option `order[s]`. Anything other than a permutation of the option indices
+        // would either drop an option or show one twice, so reject it here rather than let it reach
+        // the encoder (upstream option_order validation). The permutation is checked on the integer
+        // entries only: a non-integer entry is dropped, so the surviving set falls short of range(n)
+        // and the whole order is rejected — the same as Python's filtered `sorted(...)` compare.
+        let n = option_count(t, crit);
+        let ok = match order {
+            Value::Array(a) => {
+                let mut idxs: Vec<i64> = a
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::Number(num) => num.as_i64(),
+                        _ => None,
+                    })
+                    .collect();
+                idxs.sort_unstable();
+                a.len() == n && idxs == (0..n as i64).collect::<Vec<_>>()
+            }
+            _ => false,
+        };
+        if !ok {
+            return Err(LayaError::InvalidQuestion(format!(
+                "question {:?}: 'option_order' must be a permutation of range({}) -- one slot per \
+                 option, each option once -- got {}",
+                qid,
+                n,
+                crate::common::py_json(order)
+            )));
+        }
+    }
     if obj.contains_key("labels") {
         if t != QType::Noul {
             return Err(LayaError::InvalidQuestion(format!(
@@ -611,6 +690,20 @@ fn check_question(qid: &str, qdef: &Value) -> Result<()> {
             .map_err(|e| LayaError::InvalidQuestion(format!("question {:?}: {}", qid, e)))?;
     }
     Ok(())
+}
+
+/// How many options a validated question definition renders to. Mirrors `render_options`: a choice
+/// has one option per criterion, a score one per level, and a noul is always the pair [false, true].
+/// Used to validate `option_order` (upstream `_option_count`).
+fn option_count(t: QType, crit: Option<&Value>) -> usize {
+    match t {
+        QType::Noul => 2,
+        _ => match crit {
+            Some(Value::Object(m)) => m.len(),
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        },
+    }
 }
 
 /// Normalize a validated question into the internal form.
@@ -649,11 +742,19 @@ fn to_internal(qdef: &Value) -> Result<InternalQ> {
         None => String::new(),
     };
     let labels = obj.get("labels").cloned();
+    // Validated as a permutation of range(n) above, so every entry is a non-negative integer.
+    let option_order = obj.get("option_order").and_then(|v| v.as_array()).map(|a| {
+        a.iter()
+            .filter_map(|i| i.as_u64())
+            .map(|i| i as usize)
+            .collect()
+    });
     Ok(InternalQ {
         t,
         ins,
         crit,
         labels,
+        option_order,
     })
 }
 
@@ -808,5 +909,81 @@ mod tests {
             msg.contains("choice label 2") && msg.contains("repeats label 0"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn rejects_blank_question_id() {
+        let q = json!({"type": "noul", "instructions": "did it work"});
+        let msg = check_question("  ", &q).unwrap_err().to_string();
+        assert!(msg.contains("non-empty string"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_null_and_empty_instructions() {
+        // `null` would serialize as the text "null"; an empty string/list/dict gives the model
+        // nothing to answer (upstream instructions validation).
+        let q = json!({"type": "choice", "instructions": null, "criteria": ["a", "b"]});
+        assert!(check_question("q", &q)
+            .unwrap_err()
+            .to_string()
+            .contains("must not be None"));
+        let q = json!({"type": "choice", "instructions": "   ", "criteria": ["a", "b"]});
+        assert!(check_question("q", &q)
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
+        let q = json!({"type": "choice", "instructions": [], "criteria": ["a", "b"]});
+        assert!(check_question("q", &q)
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
+        // A number is left alone, matching Python's `isinstance(ins, (str, dict, list, int, float))`.
+        let q = json!({"type": "choice", "instructions": 3, "criteria": ["a", "b"]});
+        assert!(check_question("q", &q).is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_option_order() {
+        // Not a permutation of range(2): out of range, wrong length, or a non-integer entry.
+        for bad in [
+            json!([0, 2]),
+            json!([0]),
+            json!([0, 1, 1]),
+            json!(["0", "1"]),
+            json!(0),
+        ] {
+            let q = json!({"type": "choice", "instructions": "route",
+                           "criteria": ["a", "b"], "option_order": bad});
+            let msg = check_question("dept", &q).unwrap_err().to_string();
+            assert!(
+                msg.contains("must be a permutation of range(2)"),
+                "got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_and_stores_option_order() {
+        let q = json!({"type": "choice", "instructions": "route",
+                       "criteria": ["a", "b", "c"], "option_order": [2, 0, 1]});
+        assert!(check_question("dept", &q).is_ok());
+        assert_eq!(to_internal(&q).unwrap().option_order, Some(vec![2, 0, 1]));
+        // A noul always has two options, so [1, 0] is the only non-canonical order.
+        let q = json!({"type": "noul", "instructions": "did it work", "option_order": [1, 0]});
+        assert!(check_question("ok", &q).is_ok());
+    }
+
+    #[test]
+    fn score_legend_renders_criterion_text() {
+        // A numeric or structured level comes back as the JSON text the model was shown, not the
+        // raw JSON type (upstream render_criterion legend fix). Verified through the internal form.
+        let q = json!({"type": "score", "instructions": "rate", "criteria": [1, 2, 3]});
+        let internal = to_internal(&q).unwrap();
+        let levels = internal.crit.as_array().unwrap();
+        let rendered: Vec<Value> = levels
+            .iter()
+            .map(|c| Value::String(render_criterion(c)))
+            .collect();
+        assert_eq!(rendered, vec![json!("1"), json!("2"), json!("3")]);
     }
 }

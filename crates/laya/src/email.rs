@@ -23,8 +23,11 @@ use serde_json::Value;
 use std::sync::OnceLock;
 
 // The device/mail-app alternation, substituted twice into `DEVICE_FOOTER` just as Python does.
-const DEVICE: &str = "iphone|ipad|android|ios|celular|telemóvel|móvil|galaxy|smartphone|samsung|\
-tablet|outlook|yahoo|mail|e-?mail|gmail|windows";
+// `mobile` is here rather than a separate signature marker so a line that is *only* a footer
+// ("Sent from my mobile") is cut while a request that mentions one ("Sent from my iPhone but I
+// still need help") is preserved — the whole-line footer match below does not fire on it.
+const DEVICE: &str = "iphone|ipad|android|ios|mobile|celular|telemóvel|móvil|galaxy|smartphone|\
+samsung|tablet|outlook|yahoo|mail|e-?mail|gmail|windows";
 
 /// Compiled regexes, matching the module-level `re.compile(...)` constants in `email.py`.
 struct Regexes {
@@ -54,7 +57,7 @@ fn regexes() -> &'static Regexes {
     static RE: OnceLock<Regexes> = OnceLock::new();
     RE.get_or_init(|| {
         let device_footer = format!(
-            r"(?i)^\s*((enviad[oa] (do|pelo|pela|via|desde|a partir do)( meu| minha| mi)?|sent from( my)?) ({d})( ({d}|para|for|no|na|\d+))*|(obter o|get) outlook (para|for) (ios|android))[\s.!]*$",
+            r"(?i)^\s*((enviad[oa] (do|pelo|pela|via|desde|a partir do)( meu| minha| mi)?|sent from( my)?) ({d})( ({d}|para|for|no|na|\d+|phone|device|pro|max|mini|plus|using [a-z][a-z0-9_.+-]*))*|(obter o|get) outlook (para|for) (ios|android))[\s.!]*$",
             d = DEVICE
         );
 
@@ -103,7 +106,12 @@ fn regexes() -> &'static Regexes {
                     r"^\s*(?i:best|kind|warmest|warm|many thanks|thanks|thank you|regards|cheers|sincerely)(?i:\s+(?:and|&)\s+regards|\s+(?:regards|wishes|again|in advance|a lot|so much|very much))?[\s,;:!.]*(?:[\p{Lu}\p{Lt}\p{Lo}][\w\u{0300}-\u{036f}'-]*[\s,.]*){0,3}$",
                 )
                 .unwrap(),
-                Regex::new(r"(?i)^\s*sent from my (iphone|android|mobile|ipad)").unwrap(),
+                // The `sent from my (iphone|android|mobile|ipad)` marker is gone: it was
+                // start-anchored, so it cut a line that merely *opened* with a device mention
+                // ("Sent from my iPhone but I still need help") along with the request after it.
+                // `mobile` now rides in `DEVICE`, and `device_footer` below cuts a line that is
+                // nothing but a footer, so a request that trails one survives (upstream: drop the
+                // device signature marker, extend the footer).
                 // Portuguese/Spanish sign-offs: match only on their own, no trailing words allowed.
                 Regex::new(
                     r"(?i)^\s*(atenciosamente|att|abraços?|abs|um abraço|cordialmente|grat[oa]|(muito )?obrigad[oa]s?( desde já| pela atenção)?|(com os melhores )?cumprimentos|saudações|(un )?saludos?( cordiales)?|atentamente|(muchas )?gracias( de antemano)?)[\s,!.]*$",
@@ -365,6 +373,36 @@ mod tests {
         let out = clean_email_body("Please refund my order\n\nSent from my iPhone");
         assert!(out.contains("Please refund my order"));
         assert!(!out.contains("iPhone"));
+    }
+
+    #[test]
+    fn preserves_short_request_after_device_open() {
+        // A short line that merely opens with a device mention but carries a real request is kept:
+        // the whole-line device footer does not fire on it, and the old start-anchored "sent from
+        // my iphone" signature marker (which would have cut it) is gone (upstream: preserve requests).
+        let out = clean_email_body(
+            "I was charged twice and need a refund.\n\nSent from my iPhone, help me",
+        );
+        assert!(out.contains("need a refund"));
+        assert!(out.contains("help me"));
+    }
+
+    #[test]
+    fn cuts_mobile_only_footer() {
+        // "Sent from my mobile" is nothing but a footer now that `mobile` rides in DEVICE.
+        let out = clean_email_body("Please cancel my subscription.\n\nSent from my mobile");
+        assert!(out.contains("Please cancel my subscription"));
+        assert!(!out.to_lowercase().contains("mobile"));
+    }
+
+    #[test]
+    fn cuts_device_footer_with_using_client() {
+        // The extended footer accepts a trailing "using <app>" clause.
+        let out = clean_email_body(
+            "Please refund the duplicate charge.\n\nSent from my iPhone using Spark",
+        );
+        assert!(out.contains("Please refund the duplicate charge"));
+        assert!(!out.contains("Spark"));
     }
 
     #[test]

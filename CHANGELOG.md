@@ -3,6 +3,74 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.4 — tracks upstream Laya 0.3.22 (upstream @6d942c9)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @9d95567) that affect the
+Rust surface, up to the 0.3.22 release. The golden parity fixtures were regenerated from upstream
+0.3.22; they are byte-identical to the previous set, because the ported behaviour changes do not
+alter any sampled case (the collision-word and device-footer changes only move edge inputs, and the
+legend change only affects non-string score levels). Vendored `reference/` snapshots synced to
+upstream @6d942c9.
+
+### Changed
+- **Email device footers absorb `mobile` and drop the standalone marker.** `mobile` now rides in
+  the device alternation, and the whole-line footer also accepts a trailing
+  `phone`/`device`/`pro`/`max`/`mini`/`plus` word or a `using <app>` clause. The separate,
+  start-anchored `sent from my (iphone|android|mobile|ipad)` signature marker is gone: it cut a
+  short line that merely *opened* with a device mention along with the real request after it
+  (`Sent from my iPhone, help me`), which is now preserved, while a line that is nothing but a
+  footer (`Sent from my mobile`) is still cut (upstream drop-device-marker / extend-footer).
+- **Language detection counts a collision word once.** The eight function words that are also
+  ordinary English — `come`, `son`, `do`, `care`, `todo`, `im`, `per`, `plus` — count once however
+  often they repeat, so a repeated English word (`do more, do less`) no longer scores a foreign
+  language high enough to route plain English to the multilingual checkpoint. Every other word still
+  counts each occurrence, so `der` twice stays German (upstream `_EN_COLLISION_WORDS`).
+- **Score-answer legends render the level text.** A legend value is now `render_criterion(level)` —
+  the same JSON text the model was shown — rather than the raw JSON value, so a numeric scale passed
+  as `[1, 2, 3]` comes back with string legend values (`{"0": "1", ...}`) instead of the JSON types
+  the caller happened to pass, matching `probabilities`, which stringifies its keys (upstream
+  render_criterion legend).
+
+### Added
+- **Questions may carry `option_order`.** A permutation of the option indices, one slot per option,
+  choosing the order the options are shown to the model; the returned probabilities are unpermuted
+  back to the caller's option order so the answer is unchanged. A non-permutation is rejected naming
+  the question (upstream `option_order` + `unpermute_probs`).
+- **`instructions` is validated.** A `null` `instructions` (it would serialize as the text `null`)
+  and an empty string/list/dict (nothing for the model to answer) are rejected; a number or bool is
+  left alone, the same silent-shape class as the null/duplicate-label checks (upstream instructions
+  validation).
+- **`laya-serve` forwards the routing controls a JSON body can state.** `task` (an unknown one is a
+  422), and `lang` / `lang_guess` (each must be a language-code string; a bool or number is a 422,
+  since routing would stringify it into a real code). Each is sent only when the client sent it, so
+  an absent field still inherits what the `Router` was built with (upstream `BODY_CONTROLS`).
+
+### Changed (serve)
+- **`laya-serve` measures the state limit on the tokenizer's text.** `MAX_STATE_CHARS` is now checked
+  on `serialize_state(state)` — the string itself, or `", "`/`": "`-separated JSON for a dict/list —
+  not `to_string()`'s compact form, so the cap counts the same characters the model is charged for
+  (upstream measure-state-limit-on-tokenizer-text).
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **Truncation stats in `usage`** (#174), the **`predict_long` usage merge**, **`predict_batch`
+  `sort_by_length` / per-request token budgets**, the **opt-in calibration file**
+  (`fit_temperatures` / `save_calibration` / `load_calibration`), **`warmup()`**, the **CUDA
+  autocast weight cache** and the **MPS/CPU AMP-failure streak** (#351) all live on torch/Python
+  surfaces the Rust port does not have: it is native candle, single-request, with no hooks, no batch
+  path, and no calibration plumbing.
+- **`lang_temperatures` shape validation** (`resolve_lang_temperatures`) does not apply: the Rust
+  `Agent` does not accept per-language temperature overrides.
+- **`Router.predict` / `route` `TypeError` guards** for a `None` or non-dict `state`/`questions` are
+  enforced by the Rust type system.
+- **CLI `--sort-by-length`** is a `--batch`-mode flag; the Rust CLI is single-request.
+- **`laya-serve` `/v1/systemone/batch`, `LAYA_ROOT_PATH`, `_refuse_body_refusals` (hooks), the
+  lone-surrogate guard and `min_confidence`** do not apply: the Rust server is single-request,
+  generates no OpenAPI, has no hooks or abstention gate, and serde parses only valid UTF-8, so a lone
+  surrogate cannot survive into a `Value`. The published-model-id lookup and the `_KNOWN_MODELS` drop
+  are behaviour-preserving refactors — `normalise_name` already returns only the routable names.
+- **The ONNX / TileLang / `compile=` / finetune / evals / MCP / integrations / TypeScript-SDK work**
+  has no Rust counterpart.
+
 ## 0.2.3 — tracks upstream Laya 0.3.21 (upstream @9d95567)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @4066d5d) that affect the

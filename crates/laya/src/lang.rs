@@ -359,6 +359,32 @@ fn en_only_words() -> &'static HashSet<&'static str> {
     })
 }
 
+/// Function words that are also ordinary English words: `come` (Italian), `son` (Spanish), `do`
+/// (Portuguese), `care` (Romanian), `todo` (a to-do list), `per`, `plus`, and `im` (German `im`,
+/// and how `I'm` is written without the apostrophe). For those a repeat is evidence of the foreign
+/// language exactly once — "do more, do less" repeats an English word — so counting both hits let
+/// one such word clear the `best >= 2` bar and send plain English to the multilingual checkpoint.
+/// Every other word keeps counting occurrences (`der`, `los`, `sa` are nobody's English). Dutch
+/// `van` is deliberately left out. Built as the fixed set intersected with the non-English stop
+/// lists, matching upstream `_EN_COLLISION_WORDS`.
+fn en_collision_words() -> &'static HashSet<&'static str> {
+    static S: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    S.get_or_init(|| {
+        const CANDIDATES: [&str; 8] = ["come", "son", "do", "care", "todo", "im", "per", "plus"];
+        let mut non_en: HashSet<&'static str> = HashSet::new();
+        for (lg, sw) in stop() {
+            if *lg == "en" {
+                continue;
+            }
+            non_en.extend(sw.iter().copied());
+        }
+        CANDIDATES
+            .into_iter()
+            .filter(|w| non_en.contains(w))
+            .collect()
+    })
+}
+
 /// Whether plain-English function words outvote a marginal diacritic rate (upstream #337/#350).
 ///
 /// The rate is measured over every character, so one accented loanword or proper noun in a short
@@ -666,10 +692,20 @@ pub fn latin_profile(text: &str) -> LatinProfile {
     let stop = stop();
     let shared = shared_words();
 
-    // Per-language raw hit counts.
+    // Per-language hit counts: a collision word counts once however often it repeats, every other
+    // word counts its occurrences (upstream `_EN_COLLISION_WORDS` / `Counter` scoring).
+    let mut counts: HashMap<&str, i64> = HashMap::new();
+    for w in &words {
+        *counts.entry(*w).or_insert(0) += 1;
+    }
+    let collision = en_collision_words();
     let mut scores: IndexMap<&'static str, i64> = IndexMap::new();
     for (lg, sw) in stop {
-        let s = words.iter().filter(|w| sw.contains(*w)).count() as i64;
+        let s: i64 = counts
+            .iter()
+            .filter(|(w, _)| sw.contains(**w))
+            .map(|(w, n)| if collision.contains(*w) { 1 } else { *n })
+            .sum();
         scores.insert(lg, s);
     }
     let en = scores.get("en").copied().unwrap_or(0);
@@ -1058,6 +1094,26 @@ mod tests {
     #[test]
     fn routes_german_latin_to_non_english() {
         assert!(!is_english(&s("Der Kunde wurde zweimal belastet")));
+    }
+
+    #[test]
+    fn collision_word_repeat_counts_once() {
+        // `do` is Portuguese but also ordinary English; repeating it four times used to score
+        // Portuguese 4 and route plain English to the multilingual checkpoint. Counting a collision
+        // word once keeps this English (upstream `_EN_COLLISION_WORDS`).
+        assert_eq!(
+            latin_profile("do do do do please refund me")
+                .language
+                .as_deref(),
+            Some("en")
+        );
+        // A non-collision function word still counts every occurrence: `der` twice stays German.
+        assert_eq!(
+            latin_profile("reduzieren der helligkeit der lichter")
+                .language
+                .as_deref(),
+            Some("de")
+        );
     }
 
     #[test]

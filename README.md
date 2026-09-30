@@ -110,8 +110,11 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
 Config is via env vars (`LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`, `LAYA_PRELOAD`, `LAYA_MODELS`,
 `LAYA_AUTO_TASK`, `LAYA_API_KEY`, `LAYA_LOG_LEVEL`, `LAYA_MAX_CONCURRENT`, `LAYA_MAX_LOADED`).
 `LAYA_MAX_LOADED` (default 2) caps how many checkpoints stay resident at once; a value below what
-routing can choose reloads one per switch. The wire shape matches TypeSafe Jev's `/v1/systemone`,
-so a Jev client can point `baseUrl` here unchanged.
+routing can choose reloads one per switch. Alongside `state`/`questions`, the request body may also
+carry the routing controls `model`, `task`, `lang`/`lang_guess` (each a language-code string) and
+the `max_len`/`head_max_len` token-budget overrides; each is applied only when sent, so an absent
+field inherits the server default. The wire shape matches TypeSafe Jev's `/v1/systemone`, so a Jev
+client can point `baseUrl` here unchanged.
 
 ## Testing
 
