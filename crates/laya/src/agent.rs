@@ -79,9 +79,26 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Load a Laya checkpoint from a local directory or a Hugging Face repo id.
+    /// Load a Laya checkpoint from a local directory, a Hugging Face repo id, or a checkpoint name
+    /// or alias — the same ones [`crate::Router`] resolves, so both read one table
+    /// (`Agent::load("typed-decisions")`, `Agent::load("ml")`). Anything else (a Hub repo id, a
+    /// local directory) is used unchanged. Mirrors upstream `laya.load()`.
     pub fn load(model_id_or_path: &str, opts: LoadOptions) -> Result<Agent> {
-        let files = resolve_files(model_id_or_path, &opts)?;
+        // A registry name or alias resolves to the same (repo, subfolder) the Router would pick,
+        // instead of being handed to the Hub as a repo id. Only when the name is the whole argument
+        // (no subfolder spelled out) and does not look like a local checkpoint: a bare word like
+        // `laya` resolves the alias even when a same-named directory sits in the cwd, while
+        // `./laya` and a real checkpoint directory still load from disk (upstream load() +
+        // `_is_local_checkpoint_arg`).
+        let mut model_id = model_id_or_path.to_string();
+        let mut opts = opts;
+        if opts.subfolder.is_none() && !is_local_checkpoint_arg(model_id_or_path) {
+            if let Some((repo, sub)) = crate::router::resolve_model_spec(model_id_or_path) {
+                model_id = repo;
+                opts.subfolder = sub;
+            }
+        }
+        let files = resolve_files(&model_id, &opts)?;
 
         let cfg: Value = serde_json::from_slice(&std::fs::read(&files.config)?)?;
         let encoder_config: Value = serde_json::from_slice(&std::fs::read(&files.encoder_config)?)?;
@@ -759,6 +776,26 @@ fn to_internal(qdef: &Value) -> Result<InternalQ> {
 }
 
 /// Resolve the four checkpoint files from a local dir or a Hugging Face repo id.
+/// True when `model_id_or_path` should be treated as a local path, not a registry name/alias.
+///
+/// A bare word with no path separator reads as a name/alias. Only treat it as a path when it looks
+/// like one (a separator, or a leading `.`/`~`) or when the named directory actually holds a Laya
+/// checkpoint (`rl_agent_config.json`). So `laya` resolves the alias from the repo root, while
+/// `./laya` and a real checkpoint directory still load from disk (upstream `_is_local_checkpoint_arg`).
+fn is_local_checkpoint_arg(arg: &str) -> bool {
+    if arg.is_empty() {
+        return false;
+    }
+    if arg.starts_with('.') || arg.starts_with('~') {
+        return true;
+    }
+    if arg.contains('/') || arg.contains('\\') {
+        return true;
+    }
+    let dir = Path::new(arg);
+    dir.is_dir() && dir.join("rl_agent_config.json").is_file()
+}
+
 fn resolve_files(model_id_or_path: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
     let base = Path::new(model_id_or_path);
     if base.exists() {

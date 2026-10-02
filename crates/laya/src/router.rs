@@ -162,6 +162,21 @@ pub fn normalise_name(name: &str) -> Result<String> {
     }
 }
 
+/// Registry spec `(repo, subfolder)` for a checkpoint name or alias, or `None` when it is not one.
+///
+/// The non-raising sibling of [`normalise_name`], for callers that also accept things the registry
+/// knows nothing about — a Hub repo id or a local directory — which pass through untouched. A name
+/// or alias the registry does know resolves to the same bundled `(repo, subfolder)` the `Router`
+/// would pick, so `Agent::load("typed-decisions")` and `Router` name the same checkpoint from one
+/// table (upstream `resolve_model_spec`). Uses the bundled map, matching upstream `DEFAULT_MODELS`.
+pub fn resolve_model_spec(name: &str) -> Option<ModelSpec> {
+    let key = normalise_name(name).ok()?;
+    default_models()
+        .into_iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, spec)| spec)
+}
+
 /// Name of the typed-decisions workflow whose question ids these are (exact id-set match), else None.
 pub fn match_typed_decisions_workflow(questions: &Questions) -> Option<String> {
     let ids: BTreeSet<&str> = questions.keys().map(|s| s.as_str()).collect();
@@ -592,6 +607,26 @@ mod tests {
 
     fn de_state() -> Value {
         json!({ "text": "Mein Konto wurde zweimal belastet" })
+    }
+
+    #[test]
+    fn resolve_model_spec_names_and_aliases() {
+        // A canonical name and an alias both resolve to the bundled (repo, subfolder).
+        assert_eq!(
+            resolve_model_spec("typed-decisions"),
+            Some((BUNDLE_REPO.to_string(), Some("typed-decisions".to_string())))
+        );
+        assert_eq!(
+            resolve_model_spec("ml"),
+            Some((BUNDLE_REPO.to_string(), Some("multilingual".to_string())))
+        );
+        assert_eq!(
+            resolve_model_spec("en"),
+            Some((BUNDLE_REPO.to_string(), None))
+        );
+        // A Hub repo id or local directory is not a registry name, so it passes through as None.
+        assert_eq!(resolve_model_spec("convaiinnovations/laya"), None);
+        assert_eq!(resolve_model_spec("./some/dir"), None);
     }
 
     #[test]

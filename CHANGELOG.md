@@ -3,6 +3,67 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.5 — tracks upstream Laya 0.3.23 (upstream @4aa6761)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @6d942c9) that affect the
+Rust surface, up to the 0.3.23 release. The golden parity fixtures were regenerated from upstream
+@4aa6761 and extended with Swedish and French cases; one sampled case changed (the Swedish ticket
+now resolves to `sv` instead of undecided) and the new rows are byte-identical between this Rust
+port and the upstream Python. Vendored `reference/` snapshots synced to upstream @4aa6761.
+
+### Changed
+- **Language detection learns Swedish.** A `sv` stop-word list (with ASCII-normalised variants a
+  ticket pipeline leaves behind) joins the Latin-script guess, so a full Swedish sentence
+  (`Jag har blivit debiterad två gånger …`) resolves to `sv` and routes to the multilingual
+  checkpoint instead of going undecided. A short support fragment (`glömt lösenord`) is named by a
+  distinctive-word list below the four-token floor, the login phrase `kan inte logga in` is named
+  despite its one English-shaped token, and a shared Swedish/Danish marker alone (`hej tack`) leans
+  the text non-English without naming a language, so it is not sent to the English checkpoint
+  (upstream `_STOP["sv"]` / `_SHORT_SWEDISH_WORDS` / `_NORDIC_OVERLAP_WORDS`).
+
+### Added
+- **Email cleaning covers French mail clients.** Gmail's `Le … a écrit :` attribution and its
+  wrapped tail, Outlook's `-----Message d'origine-----` and the `De : … / Envoyé :` reply header
+  (French spaced colons allowed), the `Cordialement` / `Merci` / `Bonne journée` sign-offs, the
+  `Envoyé depuis mon iPhone` device footer, and the `Ce message est confidentiel …` disclaimer are
+  all recognised, so a French reply's quoted history and boilerplate no longer reach the model
+  (upstream feat-email-french).
+- **`Agent::load` accepts a checkpoint name or alias.** `Agent::load("typed-decisions")` and
+  `Agent::load("ml")` now resolve to the same bundled `(repo, subfolder)` the `Router` would pick,
+  from one table, instead of being handed to the Hub as a repo id and 404'ing; a Hub repo id or a
+  local directory still passes through unchanged, and a bare word only resolves when it is not a
+  real local checkpoint directory. Exposes `router::resolve_model_spec`, the non-raising sibling of
+  `normalise_name` (upstream `load()` + `resolve_model_spec` + `_is_local_checkpoint_arg`).
+
+### Changed (serve)
+- **`laya-serve` reads `LAYA_DEFAULT_MODEL`.** The routing fallback for a state with no language
+  evidence (no letters, or Latin script too short to identify) is now configurable; the name goes
+  through `normalise_name` (so aliases like `ml` work) and an unknown one exits with a message
+  rather than routing ambiguous states to a checkpoint that cannot read them (upstream
+  `LAYA_DEFAULT_MODEL`).
+- **`GET /health` gates its detail behind the bearer.** When `LAYA_API_KEY` is set, an
+  unauthenticated caller now receives only `{"status":"ok"}` — the liveness half every container
+  probe reads — while the resident-checkpoint names and host device state require the token. A
+  deployment with no key set still gets the full payload (upstream #812).
+
+### Changed (cli)
+- **`--lang-guess` reaches the command line.** A soft language hint that participates in routing
+  (checked after `--lang` and before the built-in detector) instead of forcing a checkpoint
+  (upstream cli `--lang-guess`).
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **`predict_long` window budgeting** (`build_head` / `state_room` / `window_budget` /
+  `window_batch_cap`), the **confidence-abstention gate** (`apply_confidence_gate` / `GATE_STATES`),
+  the **per-checkpoint digest / revision merge** in `Router` (`expected_sha256` precedence,
+  `LAYA_SHA256_DIGESTS`, blank-revision handling), the **`/v1/systemone/batch`** endpoint and its
+  per-call controls (`batch_size` / `sort_by_length` / `min_confidence`), the **lone-surrogate**
+  refusals, the cli **`--min-confidence`** flag and **stdin UTF-8** reconfigure, and the shortlist
+  **`return_scores`** / **`cached_embed_fn` dimension check** all live on torch/Python surfaces the
+  Rust port does not have: it is native candle, single-request, with no batch path, no confidence
+  gate, no calibration/digest plumbing, and JSON strings that are already valid UTF-8.
+- **`clamp_temperature` refusing a bool** is already the Rust behaviour: a JSON bool is neither a
+  number nor a numeric string, so it falls to the `1.0` default without a special case.
+
 ## 0.2.4 — tracks upstream Laya 0.3.22 (upstream @6d942c9)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @9d95567) that affect the
