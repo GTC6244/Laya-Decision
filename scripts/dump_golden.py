@@ -66,6 +66,12 @@ LANG_INPUTS = [
     "We met at the café for a naïve chat about the résumé and the soirée plans",
     # Rescue denied: more than one word carries a non-English letter (Swedish two/gånger), #350.
     "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    # Swedish login phrase: one English-shaped token (`in`) but the whole phrase names sv.
+    "kan inte logga in",
+    # Short Swedish support fragment below the four-token floor, named by a distinctive word.
+    "glömt lösenord",
+    # Shared Danish/Swedish markers only: undecided, but leans non-English (nordic overlap).
+    "hej tack",
 ]
 
 EMAIL_INPUTS = [
@@ -83,6 +89,13 @@ EMAIL_INPUTS = [
     "From: my side the whole integration works, but I was charged twice and need a refund please.",
     # A bare `From: Name` header followed by a `Sent:` line IS a reply header and cuts.
     "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+    # French full reply: the `Cordialement,` sign-off cut removes the signature, device footer and
+    # confidentiality line; the `Le … a écrit :` quote header removes the history (feat-email-french).
+    "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui.\n\nCordialement,\nJean Dupont\n\nEnvoyé depuis mon iPhone\n\nCe message peut contenir des informations confidentielles. Si vous avez reçu ce message par erreur, merci de le supprimer.\n\nLe lun. 22 sept. 2026 à 10:14, Support <support@x.com> a écrit :\n> Bonjour Jean, nous avons reçu votre demande d'annulation du contrat Enterprise.\n",
+    # French Gmail attribution wrapped over two lines: the `a écrit :` tail cuts with its `Le …` head.
+    "L'accès est rétabli, merci.\n\nLe lun. 22 sept. 2026 à 10:14, Support Technique <\nsupport@acme.com> a écrit :\n> ancien texte",
+    # French Outlook header without separator: a bare `De : Name` followed by `Envoyé :` cuts.
+    "Voici le justificatif.\n\nDe : Marie Dupont\nEnvoyé : lundi 22 septembre 2026\nObjet : résilier le contrat\nNous voulons résilier le contrat.",
 ]
 
 ROUTER_INPUTS = [
@@ -105,6 +118,10 @@ ROUTER_INPUTS = [
     # string value on its own catches it (upstream #384). Routes multilingual, no mixed_segment.
     {"a_log": "please help me with the account issue and the refund for the order " * 80,
      "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
+    # Swedish text now routes to multilingual on its distinctive function words (feat-email-french).
+    "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    # French text routes to multilingual.
+    "Je voudrais un remboursement pour la commande",
 ]
 
 

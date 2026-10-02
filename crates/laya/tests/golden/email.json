@@ -46,5 +46,17 @@
   {
     "input": "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
     "output": "I need a refund for the duplicate charge."
+  },
+  {
+    "input": "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui.\n\nCordialement,\nJean Dupont\n\nEnvoyé depuis mon iPhone\n\nCe message peut contenir des informations confidentielles. Si vous avez reçu ce message par erreur, merci de le supprimer.\n\nLe lun. 22 sept. 2026 à 10:14, Support <support@x.com> a écrit :\n> Bonjour Jean, nous avons reçu votre demande d'annulation du contrat Enterprise.\n",
+    "output": "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui."
+  },
+  {
+    "input": "L'accès est rétabli, merci.\n\nLe lun. 22 sept. 2026 à 10:14, Support Technique <\nsupport@acme.com> a écrit :\n> ancien texte",
+    "output": "L'accès est rétabli, merci."
+  },
+  {
+    "input": "Voici le justificatif.\n\nDe : Marie Dupont\nEnvoyé : lundi 22 septembre 2026\nObjet : résilier le contrat\nNous voulons résilier le contrat.",
+    "output": "Voici le justificatif."
   }
 ]

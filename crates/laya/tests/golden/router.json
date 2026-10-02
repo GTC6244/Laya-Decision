@@ -73,5 +73,15 @@
     },
     "model": "multilingual",
     "reason": "Latin script but language looks like 'de', not English"
+  },
+  {
+    "input": "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
+  },
+  {
+    "input": "Je voudrais un remboursement pour la commande",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'fr', not English"
   }
 ]

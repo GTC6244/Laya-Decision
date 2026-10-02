@@ -4,6 +4,7 @@
 //!   laya "Refactor this service" --predict           # full answers (downloads the checkpoint)
 //!   laya                                             # interactive mode
 //!   laya "Mein Konto wurde zweimal belastet" --lang de
+//!   laya "My payment failed twice" --lang-guess en   # a soft hint that still lets routing decide
 //!
 //! Routing (the default) never downloads a checkpoint, so it works offline and returns in
 //! milliseconds. `--predict` loads the routed checkpoint on first use (needs Hub access).
@@ -66,6 +67,11 @@ struct Cli {
     /// Force a language, e.g. en or de, instead of detecting it.
     #[arg(long)]
     lang: Option<String>,
+    /// A soft language hint that participates in routing instead of skipping detection: checked
+    /// after --lang and before the built-in detector, so a probable-but-uncertain code can nudge
+    /// the checkpoint without forcing it.
+    #[arg(long, value_name = "CODE")]
+    lang_guess: Option<String>,
     /// Force a typed-decisions workflow instead of detecting it.
     #[arg(long)]
     task: Option<String>,
@@ -100,7 +106,9 @@ fn hints(cli: &Cli) -> RouteHints<'_> {
             .filter(|m| !m.trim().eq_ignore_ascii_case("auto")),
         task: cli.task.as_deref(),
         lang: cli.lang.as_deref(),
-        lang_guess: None,
+        // A soft hint checked after `--lang` and before the built-in detector (upstream cli
+        // `--lang-guess`): it nudges routing without forcing a checkpoint.
+        lang_guess: cli.lang_guess.as_deref(),
     }
 }
 

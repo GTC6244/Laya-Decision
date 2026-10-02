@@ -12,7 +12,8 @@
 //! | `LAYA_PRELOAD`   | build checkpoints at startup, not lazily             | 1       |
 //! | `LAYA_MODELS`    | comma list to preload (english,multilingual,typed-decisions) | (all) |
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
-//! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
+//! | `LAYA_DEFAULT_MODEL` | fallback checkpoint when a state carries no language evidence (aliases like `ml` work) | english |
+//! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>` (also gates `/health` detail) | (none)  |
 //! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
 
 use std::net::SocketAddr;
@@ -60,6 +61,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// Whether a request carries the configured bearer token. True when no key is set.
+fn authorized(api_key: &Option<String>, headers: &HeaderMap) -> bool {
+    let Some(key) = api_key else {
+        return true;
+    };
+    let expected = format!("Bearer {key}");
+    let supplied = headers
+        .get("authorization")
+        .map(|v| v.as_bytes())
+        .unwrap_or(b"");
+    constant_time_eq(supplied, expected.as_bytes())
 }
 
 #[derive(Clone)]
@@ -151,10 +165,31 @@ fn build_router() -> Router {
     // switch; `preload` still raises the cap to hold whatever it builds, so this never evicts a
     // preloaded checkpoint. Unset/invalid falls back to the default, like `LAYA_MAX_CONCURRENT`.
     let max_loaded = env_usize("LAYA_MAX_LOADED", RouterOptions::default().max_loaded);
+    // Routing fallback for a state that carries no language evidence (no letters, or Latin script
+    // too short to identify). Unset leaves `Router`'s own default; a name core would reject is a
+    // configuration error, so exit with the message rather than route ambiguous states to a
+    // checkpoint the operator just said cannot read them (upstream `LAYA_DEFAULT_MODEL`).
+    let default = match std::env::var("LAYA_DEFAULT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(raw) => match normalise_name(raw.trim()) {
+            Ok(name) => name,
+            Err(e) => {
+                eprintln!(
+                    "laya-serve: invalid LAYA_DEFAULT_MODEL {:?}: {e}",
+                    raw.trim()
+                );
+                std::process::exit(2);
+            }
+        },
+        None => RouterOptions::default().default,
+    };
     let router = Router::new(RouterOptions {
         device,
         auto_task_detection: env_bool("LAYA_AUTO_TASK", false),
         max_loaded,
+        default,
         ..Default::default()
     })
     .expect("router options");
@@ -177,7 +212,14 @@ fn build_router() -> Router {
     router
 }
 
-async fn health(State(app): State<AppState>) -> Json<Value> {
+async fn health(State(app): State<AppState>, headers: HeaderMap) -> Json<Value> {
+    // Liveness stays open — every shipped container/k8s probe reads it without a credential — but
+    // the detail below it (resident checkpoint names and the host device state) is for a caller
+    // who can authenticate on a locked-down deployment. With no key set, the full payload is
+    // returned as it always has been (upstream #812: GET /health behind the bearer).
+    if !authorized(&app.api_key, &headers) {
+        return Json(json!({ "status": "ok" }));
+    }
     Json(json!({
         "status": "ok",
         "loaded": app.router.loaded(),
@@ -192,18 +234,11 @@ async fn systemone(
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     // Optional bearer auth. Compared in constant time over raw bytes so no header a client can
     // send leaks the token by timing or crashes the comparison.
-    if let Some(key) = &app.api_key {
-        let expected = format!("Bearer {key}");
-        let supplied = headers
-            .get("authorization")
-            .map(|v| v.as_bytes())
-            .unwrap_or(b"");
-        if !constant_time_eq(supplied, expected.as_bytes()) {
-            return Err(err(
-                StatusCode::UNAUTHORIZED,
-                "invalid or missing bearer token",
-            ));
-        }
+    if !authorized(&app.api_key, &headers) {
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "invalid or missing bearer token",
+        ));
     }
 
     // Bound in-flight requests without blocking: a non-blocking acquire, held to the end of the
