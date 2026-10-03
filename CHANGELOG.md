@@ -3,6 +3,87 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.5 — tracks upstream Laya 0.3.24 (upstream @fa9a2a7)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @6d942c9) that affect the
+Rust surface, up to the 0.3.24 release. The golden parity fixtures were regenerated from upstream
+0.3.24; the one pre-existing Swedish case now resolves to `sv` (it was `None` before the language
+was added), and new Swedish and French cases were added to `dump_golden.py` so the fixtures prove
+byte-level parity for the new behaviour. Vendored `reference/` snapshots synced to upstream
+@fa9a2a7.
+
+### Changed
+- **Email cleaning understands French mail clients.** With English-only markers, French quoted
+  history and boilerplate reached the model unchanged. Added: Gmail's dated `Le … a écrit :`
+  attribution (and its two-line wrapped tail, `support@x.com> a écrit :`), Outlook's
+  `-----Message d'origine-----` separator and its spaced `De :` / `Envoyé :` header pair, the
+  `Cordialement` / `Bien à vous` / `Merci` / `Bonne journée` / `Salutations` sign-offs, Apple's
+  `Envoyé depuis mon iPhone` device footer, and the confidentiality / `usage exclusif` /
+  `reçu … par erreur` disclaimer clauses. A bare request that merely mentions `confidentiel`, or a
+  dateless `Le … a écrit :` that is body text, is kept (upstream French-mail markers). The French
+  device-footer alternative is ported with upstream's exact literal pattern, including the latent
+  double-space that keeps it from matching `Envoyé depuis mon iPhone` on its own — the preceding
+  `Cordialement` sign-off is what cuts that line in the sampled cases.
+- **Language detection names Swedish.** A `sv` stopword list (with the ASCII-normalised spellings a
+  diacritic-stripping ticket pipeline produces) was added after `nl` and before `ro`, matching the
+  upstream `_STOP` insertion order that tie-breaking depends on. A short two- or three-word support
+  fragment carrying a distinctive Swedish term (`åtkomst`, `lösenord`, `fakturan`, …) is named `sv`
+  even below the four-token minimum; a `kan` + `inte` login phrase outweighs the incidental English
+  `in`; and a set of Swedish–Danish overlap words (`hej`, `mig`, `får`, `skulle`, `vi`, …) folds
+  into the shared-word set so it cannot alone name Swedish, leaving Danish/Norwegian look-alikes
+  (`Jeg kan ikke logge ind`) undecided (upstream `_STOP["sv"]`, `_SHORT_SWEDISH_WORDS`,
+  `_NORDIC_OVERLAP_WORDS` and the `latin_profile` branches).
+
+### Added (serve)
+- **`LAYA_DEFAULT_MODEL` sets the routing fallback** for the states that carry no language
+  evidence (no letters, or Latin script too short to identify). The name goes through core's alias
+  table, so `ml` works; an unknown name exits with a message rather than serving a configuration
+  that routes those states to a checkpoint the operator just said cannot read them (upstream
+  `LAYA_DEFAULT_MODEL` / `_default_model_option`).
+- **`LAYA_JEV_STRICT` projects every response onto the strict Jev wire contract**: no root
+  `routing`, no per-answer `action` / `answer_confidence`, and no `confidence` on `noul` answers, so
+  a client validating the response with no extra fields allowed keeps working. Nothing is
+  recomputed and an answer of an unknown shape passes through unchanged (upstream
+  `_project_jev_strict`).
+
+### Changed (serve)
+- **`GET /health` answers an unauthenticated caller with liveness only** when `LAYA_API_KEY` is
+  set. The status stays open — every shipped container/k8s probe reads it without a credential —
+  but the resident checkpoint names and host device state below it now require the bearer (upstream
+  #812). A deployment with no key set gets the full payload, as before.
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **The per-bucket `min_confidence` map and `apply_confidence_gate`'s `abstention` /
+  `abstention_threshold` reporting** (#361/#394) do not apply: the single-request Rust surface has
+  no abstention gate at all, so there is nothing to report a state for.
+- **`predict_long`'s window-budget machinery** — `window_budget`, `window_batch_cap`, `state_room`,
+  `build_head`'s split from `build_sequence`, and `_check_scan_budget` — lives on a long-document
+  scan the Rust port does not have (native candle, single-request, no `predict_long`).
+- **The `Router` concurrency rework** (`_InFlightBuild`, `_build_lock`, the per-checkpoint
+  in-flight `_loading` registry and the deduplicated/aborting load), the **`expected_sha256`
+  file-by-file digest merge** (`_merge_expected_digests` / `_digest_entry`) and the **blank-revision
+  normalisation** (`_revision_pin`) are Python-threading, torch-cache and Hugging-Face-Hub digest
+  specifics; the Rust `Router` is native candle with its own loading path and no `sha256_digests`
+  surface.
+- **`clamp_temperature` rejecting a `bool`** is enforced by the Rust type system (temperature is an
+  `f64`).
+- **`_check_question`'s choice-label allow-list refactor** catches Python-only shapes (`tuple`,
+  `frozenset`, `bytes`, `complex`) that have no JSON counterpart; the Rust validator already rejects
+  a non-scalar (array/object) label, and a null label is likewise left alone.
+- **`shortlist_choice(return_scores=…)` and `cached_embed_fn`'s dimension-mismatch guard** need no
+  change: the Rust `predict_shortlist` already reports the signed-cosine `scores`, the ranking was
+  already a signed cosine (negatives dropped first), and there is no embedding-cache layer to guard.
+- **`laya.load()` resolving a registry name/alias** (`resolve_model_spec`, `_is_local_checkpoint_arg`)
+  is already provided by the Rust `Router`, which resolves aliases through `normalise_name`.
+- **Rejecting a null score level with 422** (#302) already holds: a null level reaches the Rust
+  library's `check_question`, which raises `InvalidQuestion`, and `laya-serve` maps that to 422.
+- **The `/v1/systemone/batch` route and its controls** (`batch_size` / `sort_by_length`
+  validators, the per-request item controls, the summed `output_tokens`), the **lone-surrogate
+  refusal refactor**, and the **CUDA-compile padding, OOM read/write inference gate, CPU/CUDA AMP
+  dtype env knobs, atomic calibration save, `print`→`warnings`, and the evals / calibration / MCP /
+  integrations / ONNX / TileLang / TypeScript-SDK / docs work** all live on torch/Python/TS surfaces
+  the Rust port does not have.
+
 ## 0.2.4 — tracks upstream Laya 0.3.22 (upstream @6d942c9)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @9d95567) that affect the

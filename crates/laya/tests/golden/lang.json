@@ -362,10 +362,140 @@
   {
     "input": "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
     "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0294,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Om ni inte kan fa tillbaka de raderade filerna i dag avslutar jag mitt abonnemang.",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "jag vill att ni hjalper mig med detta",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Appen kraschar när jag öppnar inställningarna",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0667,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "vi har blivit debiterade tva ganger for mars",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Kan inte logga in",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Jag kan inte logga in",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Ingen åtkomst",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0769,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Glömt lösenord",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.1429,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Betalningen nekades",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Jeg kan ikke logge inn",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Jeg kan ikke logge ind på min konto",
+    "script": "latin",
     "language": null,
     "is_english": false,
     "language_undecided": true,
-    "diacritic_rate": 0.0294,
+    "diacritic_rate": 0.0286,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "No account access",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "I cannot login to my account",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
   }

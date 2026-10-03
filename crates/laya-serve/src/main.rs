@@ -12,8 +12,10 @@
 //! | `LAYA_PRELOAD`   | build checkpoints at startup, not lazily             | 1       |
 //! | `LAYA_MODELS`    | comma list to preload (english,multilingual,typed-decisions) | (all) |
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
+//! | `LAYA_DEFAULT_MODEL` | fallback checkpoint when a state carries no language evidence (aliases like `ml` work) | (english) |
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
 //! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
+//! | `LAYA_JEV_STRICT` | serve the strict Jev wire contract: no root `routing`, no per-answer `action` / `answer_confidence`, no `confidence` on noul answers | 0 |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -27,7 +29,7 @@ use axum::{
 };
 use laya::error::LayaError;
 use laya::router::{normalise_name, RouteHints, Router, RouterOptions};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::sync::Semaphore;
 
 /// Checkpoint names the router understands.
@@ -71,6 +73,76 @@ struct AppState {
     admission: Arc<Semaphore>,
     api_key: Option<String>,
     device: String,
+    /// `LAYA_JEV_STRICT`: project every response onto the strict Jev wire contract.
+    jev_strict: bool,
+}
+
+/// Whether a request carries the configured bearer. True when no key is set. Compared in constant
+/// time over raw bytes so no header a client can send leaks the token by timing.
+fn authorized(headers: &HeaderMap, api_key: &Option<String>) -> bool {
+    let Some(key) = api_key else {
+        return true;
+    };
+    let expected = format!("Bearer {key}");
+    let supplied = headers
+        .get("authorization")
+        .map(|v| v.as_bytes())
+        .unwrap_or(b"");
+    constant_time_eq(supplied, expected.as_bytes())
+}
+
+/// Project a result onto the strict Jev wire contract (`LAYA_JEV_STRICT`).
+///
+/// The Jev `/v1/systemone` response defines exactly three top-level fields (`model`, `answers`,
+/// `usage`), and each answer carries only its type's fields. A choice answer keeps `choice`,
+/// `probabilities` and `confidence`; a score answer keeps `score`, `probabilities`, `confidence`
+/// and `legend`; a noul answer keeps `noul` alone. Laya's full payload adds a root `routing`
+/// report, a per-answer `action` head plus the calibrated `answer_confidence`, and a `confidence`
+/// on noul answers. Those additions are what a client validating the response against the contract
+/// with no extra fields may reject, so this keeps only the contracted keys. Nothing is recomputed:
+/// every value is the one the result already carries, and an answer of an unknown shape passes
+/// through unchanged.
+fn project_jev_strict(result: &Value) -> Value {
+    let empty = Map::new();
+    let src = result.as_object().unwrap_or(&empty);
+    let mut answers = Map::new();
+    if let Some(ans) = src.get("answers").and_then(|v| v.as_object()) {
+        for (qid, answer) in ans {
+            let projected = match answer.get("type").and_then(|v| v.as_str()) {
+                Some("choice") => json!({
+                    "type": "choice",
+                    "choice": answer.get("choice").cloned().unwrap_or(Value::Null),
+                    "confidence": answer.get("confidence").cloned().unwrap_or(Value::Null),
+                    "probabilities": answer.get("probabilities").cloned().unwrap_or(Value::Null),
+                }),
+                Some("score") => json!({
+                    "type": "score",
+                    "score": answer.get("score").cloned().unwrap_or(Value::Null),
+                    "confidence": answer.get("confidence").cloned().unwrap_or(Value::Null),
+                    "probabilities": answer.get("probabilities").cloned().unwrap_or(Value::Null),
+                    "legend": answer.get("legend").cloned().unwrap_or(Value::Null),
+                }),
+                Some("noul") => json!({
+                    "type": "noul",
+                    "noul": answer.get("noul").cloned().unwrap_or(Value::Null),
+                }),
+                _ => answer.clone(),
+            };
+            answers.insert(qid.clone(), projected);
+        }
+    }
+    let usage = src.get("usage").and_then(|v| v.as_object());
+    let input_tokens = usage
+        .and_then(|u| u.get("input_tokens").cloned())
+        .unwrap_or(json!(0));
+    let output_tokens = usage
+        .and_then(|u| u.get("output_tokens").cloned())
+        .unwrap_or(json!(0));
+    json!({
+        "model": src.get("model").cloned().unwrap_or(Value::Null),
+        "answers": Value::Object(answers),
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    })
 }
 
 /// Positive integer from an env var, or `default` when unset, empty or unparseable.
@@ -144,6 +216,27 @@ fn validate_lang(
     }
 }
 
+/// Routing fallback from `LAYA_DEFAULT_MODEL`, normalised through core's alias table; unset or
+/// blank leaves the `Router`'s own default. An unknown name exits with a message instead of a
+/// traceback, the same idiom as `resolve_port` (upstream `_default_model_option`).
+fn resolve_default_model() -> String {
+    let fallback = RouterOptions::default().default;
+    let raw = match std::env::var("LAYA_DEFAULT_MODEL") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return fallback,
+    };
+    match normalise_name(&raw) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!(
+                "laya-serve: invalid LAYA_DEFAULT_MODEL {:?}: {e}",
+                raw.trim()
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 fn build_router() -> Router {
     let device = std::env::var("LAYA_DEVICE").ok().filter(|s| !s.is_empty());
     // Checkpoints kept resident at once (upstream `LAYA_MAX_LOADED`, default 2 — the number
@@ -151,10 +244,17 @@ fn build_router() -> Router {
     // switch; `preload` still raises the cap to hold whatever it builds, so this never evicts a
     // preloaded checkpoint. Unset/invalid falls back to the default, like `LAYA_MAX_CONCURRENT`.
     let max_loaded = env_usize("LAYA_MAX_LOADED", RouterOptions::default().max_loaded);
+    // Routing fallback for the states that carry no language evidence at all (no letters, or
+    // Latin script too short to identify). Unset leaves the Router's own default; a typo has no
+    // harmless fallback — it would keep routing those states to a checkpoint the operator just
+    // said cannot read them — so an invalid name exits with a message rather than serving a
+    // configuration nobody asked for (upstream LAYA_DEFAULT_MODEL / `_default_model_option`).
+    let default = resolve_default_model();
     let router = Router::new(RouterOptions {
         device,
         auto_task_detection: env_bool("LAYA_AUTO_TASK", false),
         max_loaded,
+        default,
         ..Default::default()
     })
     .expect("router options");
@@ -177,7 +277,14 @@ fn build_router() -> Router {
     router
 }
 
-async fn health(State(app): State<AppState>) -> Json<Value> {
+async fn health(State(app): State<AppState>, headers: HeaderMap) -> Json<Value> {
+    // Liveness stays open — every shipped probe reads it without a credential, and the endpoint
+    // promises as much. What is not open on a locked-down deployment is the detail below it:
+    // resident checkpoint names and the host device state. When a key is set, an unauthenticated
+    // caller gets the status and nothing else (upstream #812).
+    if !authorized(&headers, &app.api_key) {
+        return Json(json!({ "status": "ok" }));
+    }
     Json(json!({
         "status": "ok",
         "loaded": app.router.loaded(),
@@ -192,18 +299,11 @@ async fn systemone(
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     // Optional bearer auth. Compared in constant time over raw bytes so no header a client can
     // send leaks the token by timing or crashes the comparison.
-    if let Some(key) = &app.api_key {
-        let expected = format!("Bearer {key}");
-        let supplied = headers
-            .get("authorization")
-            .map(|v| v.as_bytes())
-            .unwrap_or(b"");
-        if !constant_time_eq(supplied, expected.as_bytes()) {
-            return Err(err(
-                StatusCode::UNAUTHORIZED,
-                "invalid or missing bearer token",
-            ));
-        }
+    if !authorized(&headers, &app.api_key) {
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "invalid or missing bearer token",
+        ));
     }
 
     // Bound in-flight requests without blocking: a non-blocking acquire, held to the end of the
@@ -394,6 +494,14 @@ async fn systemone(
 
     match result {
         Ok(Ok(v)) => {
+            // Strict callers validate the response against the Jev contract with no extra fields,
+            // so project away Laya's additions (root `routing`, `action`/`answer_confidence`, the
+            // noul `confidence`) when `LAYA_JEV_STRICT` is set (upstream `_project_jev_strict`).
+            let v = if app.jev_strict {
+                project_jev_strict(&v)
+            } else {
+                v
+            };
             // Expose the inference time the same way upstream `laya-serve` does, so a client can
             // read it without a separate timing endpoint.
             let mut headers = HeaderMap::new();
@@ -449,6 +557,7 @@ async fn main() {
         admission: Arc::new(Semaphore::new(max_concurrent)),
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,
+        jev_strict: env_bool("LAYA_JEV_STRICT", false),
     };
 
     let app = AxumRouter::new()
@@ -467,4 +576,86 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!("laya-serve listening on http://{addr}");
     axum::serve(listener, app).await.expect("server");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn jev_strict_keeps_only_contracted_fields() {
+        let full = json!({
+            "model": "laya-rl-agent",
+            "routing": {"model": "english", "reason": "detected"},
+            "answers": {
+                "c": {"type": "choice", "choice": "refund", "probabilities": {"refund": 0.9, "other": 0.1},
+                      "confidence": 0.8, "answer_confidence": 0.9, "action": {"act_probability": 0.5}},
+                "s": {"type": "score", "score": 3.0, "legend": {"0": "low"},
+                      "probabilities": {"0": 0.2, "1": 0.8}, "confidence": 0.7,
+                      "answer_confidence": 0.75, "action": {"act_probability": 0.4}},
+                "n": {"type": "noul", "noul": 0.6, "confidence": 0.6, "answer_confidence": 0.6,
+                      "action": {"act_probability": 0.3}},
+            },
+            "usage": {"input_tokens": 12, "output_tokens": 0, "truncated": false},
+        });
+        let out = project_jev_strict(&full);
+        let obj = out.as_object().unwrap();
+        // Top level: exactly model, answers, usage — no routing.
+        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["answers", "model", "usage"]);
+        // usage reduced to the two token counts.
+        let usage = obj["usage"].as_object().unwrap();
+        let mut uk: Vec<&str> = usage.keys().map(|k| k.as_str()).collect();
+        uk.sort_unstable();
+        assert_eq!(uk, vec!["input_tokens", "output_tokens"]);
+
+        let choice = out["answers"]["c"].as_object().unwrap();
+        let mut ck: Vec<&str> = choice.keys().map(|k| k.as_str()).collect();
+        ck.sort_unstable();
+        assert_eq!(ck, vec!["choice", "confidence", "probabilities", "type"]);
+
+        let score = out["answers"]["s"].as_object().unwrap();
+        let mut sk: Vec<&str> = score.keys().map(|k| k.as_str()).collect();
+        sk.sort_unstable();
+        assert_eq!(
+            sk,
+            vec!["confidence", "legend", "probabilities", "score", "type"]
+        );
+
+        // noul keeps only type + noul (no confidence, no action, no answer_confidence).
+        let noul = out["answers"]["n"].as_object().unwrap();
+        let mut nk: Vec<&str> = noul.keys().map(|k| k.as_str()).collect();
+        nk.sort_unstable();
+        assert_eq!(nk, vec!["noul", "type"]);
+    }
+
+    #[test]
+    fn jev_strict_passes_unknown_answer_shapes_through() {
+        let full = json!({
+            "model": "m",
+            "answers": {"x": {"type": "mystery", "value": 1}},
+            "usage": {"input_tokens": 1, "output_tokens": 0},
+        });
+        let out = project_jev_strict(&full);
+        assert_eq!(out["answers"]["x"], json!({"type": "mystery", "value": 1}));
+    }
+
+    #[test]
+    fn authorized_true_when_no_key_set() {
+        let headers = HeaderMap::new();
+        assert!(authorized(&headers, &None));
+    }
+
+    #[test]
+    fn authorized_checks_bearer_when_key_set() {
+        let key = Some("secret".to_string());
+        let mut headers = HeaderMap::new();
+        assert!(!authorized(&headers, &key));
+        headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
+        assert!(authorized(&headers, &key));
+        headers.insert("authorization", HeaderValue::from_static("Bearer wrong"));
+        assert!(!authorized(&headers, &key));
+    }
 }

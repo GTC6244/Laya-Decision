@@ -66,6 +66,22 @@ LANG_INPUTS = [
     "We met at the café for a naïve chat about the résumé and the soirée plans",
     # Rescue denied: more than one word carries a non-English letter (Swedish two/gånger), #350.
     "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    # Swedish detection (upstream 0.3.23/0.3.24): normal prose, ASCII-normalised support prose,
+    # short login failures and two/three-word fragments all name `sv`, while Danish/Norwegian and
+    # English look-alikes stay undecided or English.
+    "Om ni inte kan fa tillbaka de raderade filerna i dag avslutar jag mitt abonnemang.",
+    "jag vill att ni hjalper mig med detta",
+    "Appen kraschar när jag öppnar inställningarna",
+    "vi har blivit debiterade tva ganger for mars",
+    "Kan inte logga in",
+    "Jag kan inte logga in",
+    "Ingen åtkomst",
+    "Glömt lösenord",
+    "Betalningen nekades",
+    "Jeg kan ikke logge inn",
+    "Jeg kan ikke logge ind på min konto",
+    "No account access",
+    "I cannot login to my account",
 ]
 
 EMAIL_INPUTS = [
@@ -83,6 +99,16 @@ EMAIL_INPUTS = [
     "From: my side the whole integration works, but I was charged twice and need a refund please.",
     # A bare `From: Name` header followed by a `Sent:` line IS a reply header and cuts.
     "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+    # French mail clients (upstream 0.3.23/0.3.24): Gmail's `Le ... a écrit :`, Outlook's
+    # `-----Message d'origine-----` and `De :`/`Envoyé :` header, `Cordialement`/`Merci`/
+    # `Bien à vous` sign-offs, and the confidentiality / exclusive-use footers all get cut, while
+    # a request that merely mentions `confidentiel` is kept.
+    "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui.\n\nCordialement,\nJean Dupont\n\nEnvoyé depuis mon iPhone\n\nCe message peut contenir des informations confidentielles. Si vous avez reçu ce message par erreur, merci de le supprimer.\n\nLe lun. 22 sept. 2026 à 10:14, Support <support@x.com> a écrit :\n> Bonjour Jean, nous avons reçu votre demande d'annulation du contrat Enterprise.\n",
+    "Voici le justificatif.\n\nDe : Marie Dupont\nEnvoyé : lundi 22 septembre 2026\nObjet : résilier le contrat\nNous voulons résilier le contrat.",
+    "L'accès est rétabli, merci.\n\nLe lun. 22 sept. 2026 à 10:14, Support Technique <\nsupport@acme.com> a écrit :\n> ancien texte",
+    "Bonjour,\nLa facture de mars n'est pas arrivée.\nBien à vous,\nMarie",
+    "Voici le devis demandé.\n\nCe document est à l'usage exclusif du destinataire.",
+    "Le contrat confidentiel doit être signé avant vendredi.",
 ]
 
 ROUTER_INPUTS = [
@@ -105,6 +131,9 @@ ROUTER_INPUTS = [
     # string value on its own catches it (upstream #384). Routes multilingual, no mixed_segment.
     {"a_log": "please help me with the account issue and the refund for the order " * 80,
      "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
+    # Swedish support fragments route to multilingual (upstream 0.3.23/0.3.24).
+    "Kan inte logga in",
+    "Appen kraschar när jag öppnar inställningarna",
 ]
 
 
