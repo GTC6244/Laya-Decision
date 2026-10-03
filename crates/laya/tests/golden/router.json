@@ -73,5 +73,15 @@
     },
     "model": "multilingual",
     "reason": "Latin script but language looks like 'de', not English"
+  },
+  {
+    "input": "Kan inte logga in",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
+  },
+  {
+    "input": "Appen kraschar när jag öppnar inställningarna",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
   }
 ]

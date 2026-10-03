@@ -1,7 +1,10 @@
 //! Email utilities for cleaning and structuring email inputs in laya.
 //!
-//! Faithful port of `laya/email.py`. The markers cover English, Portuguese and Spanish mail
-//! clients: quoted-history headers, signatures, device footers and confidentiality disclaimers.
+//! Faithful port of `laya/email.py`. The markers cover English, Portuguese, Spanish and French
+//! mail clients: quoted-history headers, signatures, device footers and confidentiality
+//! disclaimers. French mail reads the same way through an English-only cleaner: Gmail's
+//! `Le ... a écrit :`, Outlook's `-----Message d'origine-----`, `Cordialement` and
+//! `Envoyé depuis mon iPhone` all survived until these markers were added.
 //!
 //! ## Look-around re-expression
 //!
@@ -38,6 +41,10 @@ struct Regexes {
     qh_em: Regex,
     /// `_QUOTE_HEADERS[2]`: base pattern for `El … escribió:` (digit checked separately).
     qh_el: Regex,
+    /// `_QUOTE_HEADERS[3]`: base pattern for Gmail's French `Le … a écrit :` (digit checked
+    /// separately). French typography puts a space before the colon, so the verb allows one
+    /// (`a écrit :`, never `a écrit:`).
+    qh_le: Regex,
     /// Whole-line digit test, standing in for the `(?=.*\d)` look-aheads. Uses the `regex`
     /// crate's Unicode-aware `\d` (Decimal_Number), matching Python's `re` `\d`.
     digit: Regex,
@@ -56,8 +63,10 @@ struct Regexes {
 fn regexes() -> &'static Regexes {
     static RE: OnceLock<Regexes> = OnceLock::new();
     RE.get_or_init(|| {
+        // Apple's French default ("Envoyé depuis mon iPhone") reads the same way, so the prefix
+        // group gains `envoy[ée] (depuis|de) (mon |ma |mes )?`, mirroring upstream's literal pattern.
         let device_footer = format!(
-            r"(?i)^\s*((enviad[oa] (do|pelo|pela|via|desde|a partir do)( meu| minha| mi)?|sent from( my)?) ({d})( ({d}|para|for|no|na|\d+|phone|device|pro|max|mini|plus|using [a-z][a-z0-9_.+-]*))*|(obter o|get) outlook (para|for) (ios|android))[\s.!]*$",
+            r"(?i)^\s*((enviad[oa] (do|pelo|pela|via|desde|a partir do)( meu| minha| mi)?|sent from( my)?|envoy[ée] (depuis|de) (mon |ma |mes )?) ({d})( ({d}|para|for|no|na|\d+|phone|device|pro|max|mini|plus|using [a-z][a-z0-9_.+-]*))*|(obter o|get) outlook (para|for) (ios|android))[\s.!]*$",
             d = DEVICE
         );
 
@@ -66,7 +75,7 @@ fn regexes() -> &'static Regexes {
                 Regex::new(r"(?i)^\s*On .{0,300}wrote:\s*$").unwrap(),
                 Regex::new(r"(?i)^\s*-{2,}\s*(Original|Forwarded) Message\s*-{2,}").unwrap(),
                 Regex::new(
-                    r"(?i)^\s*-{2,}\s*(Mensagem (original|encaminhada)|Mensaje (original|reenviado))\s*-{2,}",
+                    r"(?i)^\s*-{2,}\s*(Mensagem (original|encaminhada)|Mensaje (original|reenviado)|Message d'origine)\s*-{2,}",
                 )
                 .unwrap(),
                 Regex::new(r"^\s*_{8,}\s*$").unwrap(),
@@ -75,22 +84,29 @@ fn regexes() -> &'static Regexes {
                 // is only recognised when an address follows — the same rule as `De:` below. A bare
                 // `From: Name` header is caught by `header_from_name`/`header_next` instead.
                 Regex::new(r"(?i)^\s*From:\s.*[@<]").unwrap(),
-                Regex::new(r"(?i)^\s*De:\s.*[@<]").unwrap(),
+                // French Outlook writes `De :` with a space, so the marker allows one; the address
+                // rule is unchanged.
+                Regex::new(r"(?i)^\s*De\s*:\s.*[@<]").unwrap(),
             ],
             qh_em: Regex::new(r"(?i)^\s*Em .{0,300}escreveu:\s*$").unwrap(),
             qh_el: Regex::new(r"(?i)^\s*El .{0,300}escribi[óo]:\s*$").unwrap(),
+            qh_le: Regex::new(r"(?i)^\s*Le .{0,300}a [eé]crit\s*:\s*$").unwrap(),
             digit: Regex::new(r"\d").unwrap(),
+            // The French tail keeps its spaced colon (`support@x.com> a écrit :`).
             attribution_tail: Regex::new(
-                r"(?i)^.{0,120}\S@\S+\s+(wrote|escreveu|escribi[óo]):\s*$",
+                r"(?i)^.{0,120}\S@\S+\s+(wrote|escreveu|escribi[óo]|a [eé]crit)\s*:\s*$",
             )
             .unwrap(),
-            attribution_head: Regex::new(r"(?i)^\s*(On|Em|El) ").unwrap(),
+            attribution_head: Regex::new(r"(?i)^\s*(On|Em|El|Le) ").unwrap(),
             // A bare `De: Maria Souza` / `From: Maria Souza` header (no address) only cuts when the
             // header's own `Enviado:`/`Sent:` line, or a dated `Data:`/`Fecha:`/`Date:` line,
             // follows it — otherwise it reads as ordinary prose.
-            header_from_name: Regex::new(r"(?i)^\s*(De|From):\s+\S").unwrap(),
+            // French Outlook writes the same header as `De : Marie Dupont` with `Envoyé :`
+            // underneath; both allow the French spaced colon, and the neighbours still do the
+            // telling apart.
+            header_from_name: Regex::new(r"(?i)^\s*(De|From)\s*:\s+\S").unwrap(),
             header_next: Regex::new(
-                r"(?i)^\s*(Enviad[oa]( em| el)?:\s|Sent:\s|(Data|Fecha|Date):\s.*\d{4})",
+                r"(?i)^\s*(Enviad[oa]( em| el)?:\s|Envoy[ée]( le)?\s*:\s|Sent:\s|(Data|Fecha|Date):\s.*\d{4})",
             )
             .unwrap(),
             signature_markers: vec![
@@ -112,15 +128,17 @@ fn regexes() -> &'static Regexes {
                 // `mobile` now rides in `DEVICE`, and `device_footer` below cuts a line that is
                 // nothing but a footer, so a request that trails one survives (upstream: drop the
                 // device signature marker, extend the footer).
-                // Portuguese/Spanish sign-offs: match only on their own, no trailing words allowed.
+                // Portuguese/Spanish/French sign-offs: match only on their own, no trailing words
+                // allowed. French closings keep the same rule: "Merci pour votre aide, mais ..."
+                // stays, while a bare "Cordialement," or "Merci," goes with the name underneath it.
                 Regex::new(
-                    r"(?i)^\s*(atenciosamente|att|abraços?|abs|um abraço|cordialmente|grat[oa]|(muito )?obrigad[oa]s?( desde já| pela atenção)?|(com os melhores )?cumprimentos|saudações|(un )?saludos?( cordiales)?|atentamente|(muchas )?gracias( de antemano)?)[\s,!.]*$",
+                    r"(?i)^\s*(atenciosamente|att|abraços?|abs|um abraço|cordialmente|grat[oa]|(muito )?obrigad[oa]s?( desde já| pela atenção)?|(com os melhores )?cumprimentos|saudações|(un )?saludos?( cordiales)?|atentamente|(muchas )?gracias( de antemano)?|(bien )?cordialement|salutations( distinguées)?|bien à vous|merci( d'avance)?|bonne journée)[\s,!.]*$",
                 )
                 .unwrap(),
             ],
             device_footer: Regex::new(&device_footer).unwrap(),
             disclaimer: Regex::new(
-                r"(?i)(\b(e-?mail|message|information|communication|transmission|contents?)\b[^.]{0,60}\bconfidential\b[^.]{0,60}\b(intended|solely|addressee|recipient|privileged|disclos|unauthori[sz]ed)|\bconfidential\b[^.]{0,60}\b(and (may|is) (also )?privileged)|if you (have )?received this (e-?mail|message) in error|\b(esta|este) (mensagem|e-?mail|mensaje|correo)\b[^.]{0,80}(confidencia|sigilos|privilegiad)|\b(uso exclusivo|exclusivamente|únicamente|unicamente)\b[^.]{0,30}(destinatári|destinatari|pessoa|persona|entidade|entidad)|\b(recebeu|recebido|receber) (esta|este) (mensagem|e-?mail)\b[^.]{0,20} por (engano|erro)|\b(ha recibido|recibió|recibe) (este|esta) (mensaje|correo)\b[^.]{0,20} por error|\bantes de imprimir\b[^.]{0,100}(meio ambiente|medio ambiente|natureza|planeta|realmente necess)|\b(meio|medio) ambiente\b[^.]{0,30}antes de imprimir)",
+                r"(?i)(\b(e-?mail|message|information|communication|transmission|contents?)\b[^.]{0,60}\bconfidential\b[^.]{0,60}\b(intended|solely|addressee|recipient|privileged|disclos|unauthori[sz]ed)|\bconfidential\b[^.]{0,60}\b(and (may|is) (also )?privileged)|if you (have )?received this (e-?mail|message) in error|\b(esta|este) (mensagem|e-?mail|mensaje|correo)\b[^.]{0,80}(confidencia|sigilos|privilegiad)|\b(uso exclusivo|exclusivamente|únicamente|unicamente)\b[^.]{0,30}(destinatári|destinatari|pessoa|persona|entidade|entidad)|\b(recebeu|recebido|receber) (esta|este) (mensagem|e-?mail)\b[^.]{0,20} por (engano|erro)|\b(ha recibido|recibió|recibe) (este|esta) (mensaje|correo)\b[^.]{0,20} por error|\bantes de imprimir\b[^.]{0,100}(meio ambiente|medio ambiente|natureza|planeta|realmente necess)|\b(meio|medio) ambiente\b[^.]{0,30}antes de imprimir|\b(ce|cet|cette) (message|e-?mail|mail|courriel)\b[^.]{0,80}(confidentiel|privil[eé]gi)|\bavez re[çc]u (ce|cet|cette) (message|e-?mail|mail)\b[^.]{0,20} par erreur|\b(usage exclusif|exclusivement|uniquement)\b[^.]{0,30}destinataire)",
             )
             .unwrap(),
             paragraph_split: Regex::new(r"\n\s*\n").unwrap(),
@@ -134,9 +152,10 @@ fn is_quote_header(re: &Regexes, line: &str) -> bool {
     if re.quote_plain.iter().any(|p| p.is_match(line)) {
         return true;
     }
-    // `Em (?=.*\d)…escreveu:` / `El (?=.*\d)…escribió:`: base pattern + a digit anywhere in line.
+    // `Em (?=.*\d)…escreveu:` / `El (?=.*\d)…escribió:` / `Le (?=.*\d)…a écrit :`: base pattern
+    // + a digit anywhere in line.
     let has_digit = re.digit.is_match(line);
-    has_digit && (re.qh_em.is_match(line) || re.qh_el.is_match(line))
+    has_digit && (re.qh_em.is_match(line) || re.qh_el.is_match(line) || re.qh_le.is_match(line))
 }
 
 /// First letter is uppercase: a fresh sentence, not a wrapped line. Uncased scripts never start
@@ -494,6 +513,91 @@ mod tests {
         assert!(out.contains("I need a refund"));
         assert!(!out.contains("Maria Souza"));
         assert!(!out.contains("Old quoted"));
+    }
+
+    #[test]
+    fn fr_full_reply_keeps_only_the_request() {
+        let email = "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui.\n\nCordialement,\nJean Dupont\n\nEnvoyé depuis mon iPhone\n\nCe message peut contenir des informations confidentielles. Si vous avez reçu ce message par erreur, merci de le supprimer.\n\nLe lun. 22 sept. 2026 à 10:14, Support <support@x.com> a écrit :\n> Bonjour Jean, nous avons reçu votre demande d'annulation du contrat Enterprise.\n";
+        assert_eq!(
+            clean_email_body(email),
+            "Bonjour,\n\nJ'ai été facturé deux fois sur la facture de mars. Merci de rembourser le double paiement aujourd'hui."
+        );
+    }
+
+    #[test]
+    fn fr_outlook_original_message_block_is_cut() {
+        let out = clean_email_body(
+            "Voici le justificatif de paiement.\n\n-----Message d'origine-----\nDe : Marie <marie@acme.com>\nObjet : résilier le contrat\nNous voulons résilier le contrat.",
+        );
+        assert_eq!(out, "Voici le justificatif de paiement.");
+    }
+
+    #[test]
+    fn fr_outlook_header_without_separator_is_cut() {
+        let out = clean_email_body(
+            "Voici le justificatif.\n\nDe : Marie Dupont\nEnvoyé : lundi 22 septembre 2026\nObjet : résilier le contrat\nNous voulons résilier le contrat.",
+        );
+        assert_eq!(out, "Voici le justificatif.");
+    }
+
+    #[test]
+    fn fr_gmail_attribution_wrapped_over_two_lines_is_cut_whole() {
+        let out = clean_email_body(
+            "L'accès est rétabli, merci.\n\nLe lun. 22 sept. 2026 à 10:14, Support Technique <\nsupport@acme.com> a écrit :\n> ancien texte",
+        );
+        assert_eq!(out, "L'accès est rétabli, merci.");
+    }
+
+    #[test]
+    fn fr_short_signoff_is_removed() {
+        let out = clean_email_body("Bonjour,\nLa facture de mars n'est pas arrivée.\nMerci,\nJean");
+        assert_eq!(out, "Bonjour,\nLa facture de mars n'est pas arrivée.");
+    }
+
+    #[test]
+    fn fr_bien_a_vous_signoff_is_removed() {
+        let out = clean_email_body(
+            "Bonjour,\nLa facture de mars n'est pas arrivée.\nBien à vous,\nMarie",
+        );
+        assert_eq!(out, "Bonjour,\nLa facture de mars n'est pas arrivée.");
+    }
+
+    #[test]
+    fn fr_disclaimer_footer_is_dropped() {
+        let out = clean_email_body(
+            "J'ai besoin de la facture de mars.\n\nSi vous avez reçu ce message par erreur, supprimez-le.",
+        );
+        assert_eq!(out, "J'ai besoin de la facture de mars.");
+    }
+
+    #[test]
+    fn fr_exclusive_use_footer_is_dropped() {
+        let out = clean_email_body(
+            "Voici le devis demandé.\n\nCe document est à l'usage exclusif du destinataire.",
+        );
+        assert_eq!(out, "Voici le devis demandé.");
+    }
+
+    #[test]
+    fn fr_request_mentioning_confidentiel_is_kept() {
+        // No `ce message` anchor, so the bare adjective is not a disclaimer.
+        let out = clean_email_body("Le contrat confidentiel doit être signé avant vendredi.");
+        assert_eq!(
+            out,
+            "Le contrat confidentiel doit être signé avant vendredi."
+        );
+    }
+
+    #[test]
+    fn fr_le_a_ecrit_without_date_is_body_text() {
+        // `Le ... a écrit :` carries a date when a client wrote it; without one it is body text.
+        let out = clean_email_body(
+            "Bonjour,\nLe rapport que vous avez écrit :\nla commande 4411 n'est pas arrivée.",
+        );
+        assert_eq!(
+            out,
+            "Bonjour,\nLe rapport que vous avez écrit :\nla commande 4411 n'est pas arrivée."
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ from `laya.common`, the same guard checkpoint load uses. There is no second pair
 bounds in this module.
 """
 import warnings
+from numbers import Integral
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -55,6 +56,35 @@ def _vec(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float32).reshape(-1)
 
 
+def _validated_pair(logits, target, k=None):
+    vectors = []
+    for name, value in (("logits", logits), ("target", target)):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        try:
+            vector = np.asarray(value)
+            if vector.ndim != 1 or vector.dtype.kind not in "iuf":
+                raise ValueError("%s must be a one-dimensional numeric vector" % name)
+            with np.errstate(over="ignore", invalid="ignore"):
+                vector = vector.astype(np.float32)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("%s must be a one-dimensional numeric vector" % name) from exc
+        if not np.isfinite(vector).all():
+            raise ValueError("%s must contain only finite values" % name)
+        vectors.append(vector)
+    logits, target = vectors
+    if len(logits) != len(target):
+        raise ValueError("logits and target must have the same length")
+    if k is None:
+        k = len(logits)
+    if isinstance(k, bool) or not isinstance(k, Integral) or k < 1 or k > len(logits):
+        raise ValueError("k must be an integer between 1 and the vector length")
+    logits, target = logits[:k], target[:k]
+    if (target < 0).any() or not np.isclose(target.sum(), 1.0, rtol=1e-5, atol=1e-6):
+        raise ValueError("target must be a nonnegative probability vector summing to 1")
+    return logits, target, int(k)
+
+
 def _pairs_to_tensors(pairs: Sequence) -> Tuple[torch.Tensor, torch.Tensor]:
     kmax = max(len(_vec(z)) for z, _ in pairs)
     z_mat = torch.full((len(pairs), kmax), -1e4)
@@ -62,7 +92,7 @@ def _pairs_to_tensors(pairs: Sequence) -> Tuple[torch.Tensor, torch.Tensor]:
     for i, (z, t) in enumerate(pairs):
         z = _vec(z)
         t = _vec(t)
-        n = min(len(z), len(t))
+        n = len(z)
         z_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(z[:n]))
         t_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(t[:n]))
     return z_mat, t_mat
@@ -80,7 +110,16 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
     """
     if min_n is None:
         min_n = MIN_BUCKET_N
-    sel = list(pairs)
+    if isinstance(min_n, bool) or not isinstance(min_n, Integral) or min_n < 1:
+        raise ValueError("min_n must be a positive integer")
+    sel = []
+    for pair in pairs:
+        try:
+            z, t = pair
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pair must be (logits, target)") from exc
+        z, t, _k = _validated_pair(z, t)
+        sel.append((z, t))
     if len(sel) < min_n:
         return 1.0
     z_mat, t_mat = _pairs_to_tensors(sel)
@@ -102,19 +141,19 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
 def _iter_records(records: Iterable) -> List[Tuple[int, np.ndarray, np.ndarray, int]]:
     out = []
     for rec in records:
+        if not isinstance(rec, (list, tuple)) or len(rec) not in (3, 4):
+            raise ValueError("record must be (qtype, logits, target[, k])")
         if len(rec) == 4:
             qtype, logits, target, k = rec
-        elif len(rec) == 3:
-            qtype, logits, target = rec
-            k = len(_vec(logits))
+            if k is None:
+                raise ValueError("k must be an integer between 1 and the vector length")
         else:
-            raise ValueError("record must be (qtype, logits, target[, k])")
-        logits = _vec(logits)
-        target = _vec(target)
-        k = int(k)
-        if k < 1:
-            raise ValueError("k must be >= 1")
-        out.append((int(qtype), logits[:k], target[:k], k))
+            qtype, logits, target = rec
+            k = None
+        if isinstance(qtype, bool) or not isinstance(qtype, Integral) or not 0 <= qtype < N_QTYPES:
+            raise ValueError("qtype must be an integer between 0 and %d" % (N_QTYPES - 1))
+        logits, target, k = _validated_pair(logits, target, k)
+        out.append((int(qtype), logits, target, k))
     return out
 
 
@@ -258,6 +297,150 @@ def fit_temperature_map(records: Iterable, compute_ece: bool = False, seed: int 
 fit_temperatures = fit_temperature_map
 
 
+# Per-bucket floor for abstention thresholds. Lower than `MIN_BUCKET_N` (which governs temperature
+# fitting): a threshold is a single order statistic of the calibrated confidences, so it stabilises
+# on far fewer examples than an LBFGS temperature does. Buckets below this are omitted; the caller's
+# scalar `min_confidence` (or the map's "default") covers them.
+MIN_ABSTAIN_BUCKET_N = 100
+
+
+def _select_abstention_threshold(pairs: Sequence[Tuple[float, int]], target_error: float,
+                                 conservative: bool) -> float:
+    """Smallest confidence `tau` whose accepted set (`conf >= tau`) keeps error <= `target_error`.
+
+    `pairs` are `(confidence, correct)`. Sweeping from the most confident down maximises coverage
+    at the target risk (the selective-classification / split-conformal cut). `conservative` adds one
+    pseudo-error so a bucket does not clear the gate on a lucky short run. Returns 1.0 when no cut
+    holds the risk -- the bucket is too unreliable to accept anything short of a reported certainty.
+    """
+    ordered = sorted(pairs, key=lambda cc: cc[0], reverse=True)
+    levels = sorted({c for c, _ in ordered}, reverse=True)
+    n = len(ordered)
+    n_acc = n_err = idx = 0
+    best = None
+    # Evaluate the error over the WHOLE accepted set {conf >= tau} at each distinct level, not
+    # incrementally within a tie: a threshold accepts every answer at its own confidence, so a tie
+    # group's errors must all be counted before the level is judged (else the cut sinks into a bad
+    # cohort on its first few correct members).
+    for tau in levels:
+        while idx < n and ordered[idx][0] >= tau:
+            n_acc += 1
+            n_err += 0 if ordered[idx][1] else 1
+            idx += 1
+        rate = (n_err + 1.0) / (n_acc + 1.0) if conservative else (n_err / n_acc)
+        if n_acc > 0 and rate <= target_error:
+            best = tau
+    if best is None:
+        return 1.0
+    return float(min(1.0, max(0.0, best)))
+
+
+def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
+                              temperature_by_options: Dict[str, float], *,
+                              target_error: float = 0.10,
+                              min_bucket_n: int = MIN_ABSTAIN_BUCKET_N,
+                              conservative: bool = True) -> Dict[str, float]:
+    """Fit a per-`temp_bucket` abstention threshold so a gate keeps a target error in every bucket.
+
+    A single `min_confidence` does not transfer across option counts (#394): the calibrated
+    confidence of a 2-option and a 12-option answer live on different scales, so one cut over- or
+    under-abstains depending on the question. This fits one cut per bucket instead, keyed exactly
+    like `temperature_by_options` (`common.temp_bucket`, e.g. ``"choice:3-5"``), and the result is a
+    `min_confidence` map that :func:`laya.confidence.check_min_confidence` /
+    :func:`laya.confidence.apply_confidence_gate` accept directly.
+
+    `records` are the same `(qtype, logits, target[, k])` tuples `fit_temperature_map` consumes
+    (`records_from_labeled` builds them). Confidence is the **calibrated** `max(p)` -- the logits are
+    scaled by the fitted `temperature` / `temperature_by_options` first, so thresholds and the
+    numbers the runtime reports are on the same scale. `target_error` is the tolerated error among
+    accepted answers; `min_bucket_n` omits buckets too small to fit, and `conservative` adds a
+    one-sample margin. The thresholds are empirical cuts on the calibration set, not a formal
+    coverage guarantee -- validate on held-out data (`fit_temperature_map(..., compute_ece=True)`
+    gives a held-out split) for a production gate.
+    """
+    if not 0.0 <= target_error <= 1.0:
+        raise ValueError("target_error must be in [0.0, 1.0], got %r" % (target_error,))
+    recs = _iter_records(records)
+    by_bucket: Dict[str, List[Tuple[float, int]]] = {}
+    for qt, z, t, k in recs:
+        y = int(np.argmax(t[:k]))
+        t_scale = temperature_by_options.get(temp_bucket(qt, k), temperature[qt])
+        p = _softmax(z[:k], t_scale)
+        by_bucket.setdefault(temp_bucket(qt, k), []).append((float(p.max()), int(int(p.argmax()) == y)))
+    out: Dict[str, float] = {}
+    for key, pairs in by_bucket.items():
+        if len(pairs) < min_bucket_n:
+            continue
+        out[key] = _select_abstention_threshold(pairs, target_error, conservative)
+    return out
+
+
+# Per-bucket floor for histogram-binning recalibration. Higher than the abstention floor because a
+# binning map splits each bucket's examples across `bins`, so each bin needs its own sample; lower
+# than the temperature floor because binning is a count per bin, not an optimisation.
+MIN_BINNING_BUCKET_N = 200
+
+
+def fit_binning_map(records: Iterable, temperature: Sequence[float],
+                    temperature_by_options: Dict[str, float], *, bins: int = 15,
+                    min_bucket_n: int = MIN_BINNING_BUCKET_N) -> Dict[str, Dict[str, Any]]:
+    """Fit a per-`temp_bucket` histogram-binning recalibration map for `answer_confidence`.
+
+    Temperature scaling applies one scalar per bucket; it cannot fix a bucket whose reliability
+    curve is not a simple sharpening/softening (the pathological `choice:11+` the shipped English
+    checkpoint carries is one). Histogram binning is the non-parametric alternative: split the
+    calibrated confidences of a bucket into `bins` equal-width bins over [0, 1], and map every
+    confidence that lands in a bin to that bin's empirical accuracy. It needs no monotonicity
+    assumption and no extra dependency (NumPy only; isotonic regression would pull in scikit-learn).
+
+    `records` are the same `(qtype, logits, target[, k])` tuples `fit_temperature_map` consumes;
+    confidence is the calibrated `max(p)` (logits scaled by the fitted `temperature` /
+    `temperature_by_options` first), so a binning map composes on top of a temperature map rather
+    than replacing it. Returns `{bucket: {"bins": N, "values": [recalibrated confidence per bin]}}`;
+    buckets below `min_bucket_n` are omitted. Apply it with :func:`apply_binning_map`. An empty bin
+    (a confidence range the calibration set never produced) maps to its own midpoint, i.e. leaves
+    that region unchanged, so an unseen value is never recalibrated to a fabricated 0.
+    """
+    if bins < 1:
+        raise ValueError("bins must be >= 1, got %r" % (bins,))
+    recs = _iter_records(records)
+    by_bucket: Dict[str, List[Tuple[float, int]]] = {}
+    for qt, z, t, k in recs:
+        y = int(np.argmax(t[:k]))
+        t_scale = temperature_by_options.get(temp_bucket(qt, k), temperature[qt])
+        p = _softmax(z[:k], t_scale)
+        by_bucket.setdefault(temp_bucket(qt, k), []).append((float(p.max()), int(int(p.argmax()) == y)))
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, pairs in by_bucket.items():
+        if len(pairs) < min_bucket_n:
+            continue
+        conf = np.asarray([c for c, _ in pairs], dtype=float)
+        corr = np.asarray([c for _, c in pairs], dtype=float)
+        idx = np.clip((conf * bins).astype(int), 0, bins - 1)
+        values = []
+        for b in range(bins):
+            mask = idx == b
+            values.append(float(corr[mask].mean()) if mask.any() else (b + 0.5) / bins)
+        out[key] = {"bins": bins, "values": values}
+    return out
+
+
+def apply_binning_map(confidence: float, bucket: str,
+                      binning_map: Dict[str, Dict[str, Any]]) -> float:
+    """Recalibrate one `answer_confidence` for its option-count `bucket` (`common.temp_bucket`).
+
+    Returns the confidence unchanged when the map has no entry for the bucket, so a bucket the map
+    was not fit for passes through rather than being forced to a wrong value.
+    """
+    entry = binning_map.get(bucket)
+    if not entry:
+        return float(confidence)
+    bins = int(entry["bins"])
+    b = min(bins - 1, max(0, int(float(confidence) * bins)))
+    return float(entry["values"][b])
+
+
+@torch.no_grad()
 def records_from_labeled(agent, pairs: Sequence) -> List[Record]:
     """Collect CPU records from `(state, questions, targets)`.
 
@@ -398,13 +581,36 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
     and still loads, so an older file never becomes a hard failure. Each value is passed
     through `clamp_temperature`, so a non-numeric or out-of-range entry cannot crash a later
     forward the way an unclamped zero used to.
+
+    The payload's *shape* is checked before any of that, and refused with a `ValueError`
+    naming the field: the values may be junk the clamp forgives, but a temperature that is
+    not a list of three, a version that is not an integer, or a bucket map that is not an
+    object is a file this code cannot read -- JSON gives `int`, `str`, `list` and `dict`
+    for the three mistakes below just as happily as it gives the right shapes, and each
+    used to fail with a raw `TypeError`/`AttributeError` from `len()`/`dict()`, or worse,
+    to load: a `{"a": 1, "b": 2, "c": 3}` or `"abc"` has `len` 3 and used to pass the
+    length check and install its *keys* as temperatures.
     """
+    if not isinstance(payload, dict):
+        raise ValueError("calibration JSON must be an object, got %s" % type(payload).__name__)
     version = payload.get("version", 1)
     if version is None:
         version = 1
+    if isinstance(version, bool) or not isinstance(version, (int, float, str)):
+        raise ValueError("calibration JSON version must be an integer, got %r" % (version,))
+    try:
+        version = int(version)
+    except (TypeError, ValueError, OverflowError) as exc:   # Overflow: JSON's 1e999 is inf
+        raise ValueError(
+            "calibration JSON version must be an integer, got %r" % (version,)) from exc
     temps = payload.get("temperature")
-    if temps is None or len(temps) != N_QTYPES:
+    if not isinstance(temps, (list, tuple)) or len(temps) != N_QTYPES:
         raise ValueError("calibration JSON must contain temperature: [3 floats]")
-    if int(version) >= CALIBRATION_VERSION:
+    by_options = payload.get("temperature_by_options") or {}
+    if not isinstance(by_options, dict):
+        raise ValueError(
+            "calibration JSON temperature_by_options must be an object of bucket -> float, "
+            "got %s" % type(by_options).__name__)
+    if version >= CALIBRATION_VERSION:
         _warn_if_identity_mismatch(obj, payload)
-    _install_temperatures(obj, temps, payload.get("temperature_by_options") or {})
+    _install_temperatures(obj, temps, by_options)
