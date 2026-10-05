@@ -362,10 +362,60 @@
   {
     "input": "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
     "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0294,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Jag behöver hjälp med min faktura och vill ha en återbetalning",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0484,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "jag kan inte logga in på mitt konto",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0286,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "aterbetalning av fakturan tack",
+    "script": "latin",
     "language": null,
     "is_english": false,
     "language_undecided": true,
-    "diacritic_rate": 0.0294,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "glömt lösenord",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.1429,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "hej jeg har et problem med min konto",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
   }

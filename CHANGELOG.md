@@ -3,6 +3,73 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.5 — tracks upstream Laya 0.3.27 (upstream @8a6e132)
+
+Ports the upstream `laya/` and `laya-serve` changes made after the previous sync (upstream
+@6d942c9) that affect the Rust surface, up to the 0.3.27 release. The golden parity fixtures were
+regenerated from upstream 0.3.27 and gained new Swedish and French cases; every previously sampled
+case is byte-identical, because the ported behaviour changes only reach inputs the old set did not
+cover. Vendored `reference/` snapshots synced to upstream @8a6e132.
+
+### Added
+- **French mail clients are cleaned.** Quoted-history headers (Gmail's `Le … a écrit :` with its
+  spaced colon, Outlook's `-----Message d'origine-----` and `De : …` / `Envoyé :` reply headers),
+  French sign-offs (`Cordialement`, `Salutations distinguées`, `Bien à vous`, `Merci`,
+  `Bonne journée`), the `Envoyé depuis mon iPhone` device footer, and the French confidentiality
+  disclaimer (`Ce message est confidentiel …`, `… reçu ce message par erreur`, `usage exclusif du
+  destinataire`) are now recognised, matching the English/Portuguese/Spanish markers that already
+  existed. A line that merely mentions a device or `merci` with a real request after it is still
+  preserved (upstream French mail-client support).
+- **Swedish is detected and routed to the multilingual checkpoint.** A new `sv` stopword list, a
+  set of short diacritic-stripped spellings that identify a two- or three-word fragment
+  (`glömt lösenord`), a `kan inte …` login-phrase rule that survives the single English-shaped
+  token it carries, and a Swedish–Danish overlap set that lets an ambiguous Nordic line prefer the
+  multilingual checkpoint without naming Danish text as Swedish (upstream `sv` support /
+  `_SHORT_SWEDISH_WORDS` / `_NORDIC_OVERLAP_WORDS`).
+
+### Added (serve)
+- **`LAYA_DEFAULT_MODEL` sets the routing fallback** for a state that carries no language evidence
+  (`Router(default=…)`); aliases such as `ml` work, an unknown name exits at startup with a message
+  rather than a traceback, and unset leaves the Router's own `english` default (upstream
+  `LAYA_DEFAULT_MODEL`).
+- **`LAYA_JEV_STRICT` serves the strict Jev wire contract.** When set, the response drops the Laya
+  extensions a contract-validating client may reject: the root `routing` report, each answer's
+  `action` head and calibrated `answer_confidence`, and the `confidence` on a `noul` answer. Nothing
+  is recomputed and an unknown answer shape passes through unchanged (upstream
+  `_project_jev_strict`).
+
+### Changed (serve)
+- **An unpublished, path-like `model` is a 422 instead of a silent auto-route.** A `model` field
+  that names a filesystem path or an unpublished Hub repo id (`org/repo`, `./ckpt`, `~/ckpt`) is now
+  refused, naming the checkpoint the server cannot load; a Jev id such as `jev-1` and the bundle id
+  `convaiinnovations/laya` still mean "let the router choose" (upstream #919).
+- **`GET /health` returns liveness only to an unauthenticated caller when `LAYA_API_KEY` is set.**
+  The `status` stays open for container and k8s probes, but the resident checkpoint names and host
+  device state below it now require the bearer (upstream #812).
+- **A `score` question with a `null` level is a 422.** A hole in the rubric would otherwise answer
+  200 with a `legend` carrying `{"<i>": null}`, which a Jev client's schema refuses to parse
+  (upstream #302).
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **`shortlist_choice(return_scores=…)` and the signed-cosine ranking clarification** need no
+  change: the Rust `rank` already ranks by a signed cosine (a zero score outranks a negative one,
+  `k` drops the negatives first) and `predict_shortlist` already reports the per-label scores in its
+  `shortlist` metadata. `cached_embed_fn`'s dimensionality guard does not apply — the Rust surface
+  takes an `embed_fn` closure and owns no cache.
+- **The `common.build_head` / `state_room` / `window_batch_cap` split, `predict_long`'s window
+  re-budgeting and `_check_scan_budget`** live on the long-document scan and batch paths the Rust
+  port does not have: it is single-request with no `predict_long`.
+- **`clamp_temperature` rejecting a bool, and the choice-label allow-list** (`str`/`int`/`float`/
+  `bool`/`None`) are enforced by the Rust type system and JSON model: a temperature is a typed
+  `f64`, and a JSON label is already one of null/bool/number/string/array/object, so denying
+  array/object is the same set as allowing the scalars.
+- **`Router` digest/revision pinning, the in-flight-build de-duplication, the MPS cache drains, the
+  `_ScanLong` contextvar refactor, the confidence/abstention gate, per-call hooks on the batch
+  methods, the CLI `--min-confidence` / `--lang-guess` / `--batch` flags and stdout/stdin UTF-8
+  reconfigure**, and the **backends / `compile` / CUDA-graph / AMP / calibration-binning / idle
+  model unload / ONNX / TileLang / Java / .NET / MCP / integrations / TypeScript-SDK work** all live
+  on torch/Python/other-port surfaces the Rust port does not carry.
+
 ## 0.2.4 — tracks upstream Laya 0.3.22 (upstream @6d942c9)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @9d95567) that affect the
