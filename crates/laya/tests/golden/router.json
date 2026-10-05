@@ -73,5 +73,17 @@
     },
     "model": "multilingual",
     "reason": "Latin script but language looks like 'de', not English"
+  },
+  {
+    "input": "Jag behöver hjälp med min faktura och vill ha återbetalning",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
+  },
+  {
+    "input": {
+      "message": "jag kan inte logga in på mitt konto"
+    },
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
   }
 ]

@@ -46,5 +46,25 @@
   {
     "input": "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
     "output": "I need a refund for the duplicate charge."
+  },
+  {
+    "input": "Merci de me rembourser le double paiement.\n\nLe lun. 3 oct. 2024, Jean <jean@x.com> a écrit :\n> ancien message",
+    "output": "Merci de me rembourser le double paiement."
+  },
+  {
+    "input": "Veuillez annuler ma commande.\n\nEnvoyé depuis mon iPhone",
+    "output": "Veuillez annuler ma commande."
+  },
+  {
+    "input": "Bonjour, j'ai besoin d'aide avec ma facture.\n\nCordialement,\nMarie Dupont",
+    "output": "Bonjour, j'ai besoin d'aide avec ma facture."
+  },
+  {
+    "input": "Pouvez-vous m'aider ?\n\nCe message est confidentiel et destine uniquement au destinataire.",
+    "output": "Pouvez-vous m'aider ?"
+  },
+  {
+    "input": "J'ai besoin d'un remboursement.\n\nDe : Marie Dupont\nEnvoyé : lundi\nancien texte cite ici",
+    "output": "J'ai besoin d'un remboursement."
   }
 ]

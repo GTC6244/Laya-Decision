@@ -66,6 +66,14 @@ LANG_INPUTS = [
     "We met at the café for a naïve chat about the résumé and the soirée plans",
     # Rescue denied: more than one word carries a non-English letter (Swedish two/gånger), #350.
     "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    # Swedish detection (upstream `sv` support). Full sentences, a short login phrase that carries
+    # one English-shaped token (`in`) but opens with `kan inte`, short fragments identified by a
+    # distinctive diacritic-stripped spelling, and a Danish-shaped line that must NOT become sv.
+    "Jag behöver hjälp med min faktura och vill ha en återbetalning",
+    "jag kan inte logga in på mitt konto",
+    "aterbetalning av fakturan tack",
+    "glömt lösenord",
+    "hej jeg har et problem med min konto",
 ]
 
 EMAIL_INPUTS = [
@@ -83,6 +91,12 @@ EMAIL_INPUTS = [
     "From: my side the whole integration works, but I was charged twice and need a refund please.",
     # A bare `From: Name` header followed by a `Sent:` line IS a reply header and cuts.
     "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+    # French mail clients (upstream French-device-footer / French-attribution support).
+    "Merci de me rembourser le double paiement.\n\nLe lun. 3 oct. 2024, Jean <jean@x.com> a écrit :\n> ancien message",
+    "Veuillez annuler ma commande.\n\nEnvoyé depuis mon iPhone",
+    "Bonjour, j'ai besoin d'aide avec ma facture.\n\nCordialement,\nMarie Dupont",
+    "Pouvez-vous m'aider ?\n\nCe message est confidentiel et destine uniquement au destinataire.",
+    "J'ai besoin d'un remboursement.\n\nDe : Marie Dupont\nEnvoyé : lundi\nancien texte cite ici",
 ]
 
 ROUTER_INPUTS = [
@@ -105,6 +119,9 @@ ROUTER_INPUTS = [
     # string value on its own catches it (upstream #384). Routes multilingual, no mixed_segment.
     {"a_log": "please help me with the account issue and the refund for the order " * 80,
      "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
+    # Swedish routes to multilingual (upstream `sv` support).
+    "Jag behöver hjälp med min faktura och vill ha återbetalning",
+    {"message": "jag kan inte logga in på mitt konto"},
 ]
 
 

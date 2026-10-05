@@ -33,7 +33,8 @@ def shortlist_choice(
     k: int = DEFAULT_SHORTLIST_K,
     *,
     instructions: Optional[str] = None,
-) -> List[Any]:
+    return_scores: bool = False,
+) -> Any:
     """Return the top-``k`` choice labels for ``state``.
 
     ``embed_fn`` maps a list of strings to an array of shape ``(len(texts), dim)``.
@@ -43,10 +44,19 @@ def shortlist_choice(
     When ``k`` is at least the number of labels, every label is returned in its
     original order and ``embed_fn`` is not called.
 
-    Ties keep the earlier label. A zero vector scores 0 and does not outrank a
-    label that came before it.
+    Ties keep the earlier label. Ranking is a signed cosine, not a similarity floor:
+    a label that scores 0 -- no signal at all, or a non-finite vector treated as one
+    -- does outrank an earlier label that scored negative, and ``k`` drops the
+    negative labels first.
+
+    With ``return_scores=True`` the return is the ``(labels, scores)`` pair, where
+    ``scores`` holds the signed cosine per kept label in rank order -- the same
+    values ``predict_shortlist`` reports in its ``shortlist`` metadata. ``scores``
+    is ``None`` when nothing was dropped, exactly as in that metadata.
     """
-    labels, _scores, _passthrough, _n = _rank(state, criteria, embed_fn, k, instructions)
+    labels, scores, _passthrough, _n = _rank(state, criteria, embed_fn, k, instructions)
+    if return_scores:
+        return labels, scores
     return labels
 
 
@@ -66,8 +76,11 @@ def predict_shortlist(
 
     The returned dict is the model result plus a ``shortlist`` entry. Probabilities
     on a shortlisted choice are over the kept labels only. ``shortlist[qid]`` holds
-    ``labels`` (rank order), ``scores`` (cosine, or ``None`` when nothing was
-    dropped), ``k``, ``n``, and ``passthrough``.
+    ``labels``, ``scores``, ``k``, ``n``, and ``passthrough``. ``labels`` is the rank
+    order a shortlist produced, or the criteria order itself when ``passthrough`` is
+    set and no ranking ran; ``scores`` is the signed cosine of each kept label in that
+    order -- negative included, never clamped to 0 -- or ``None`` when nothing was
+    dropped.
 
     Extra keyword arguments are forwarded to ``predict`` / ``system_one`` (for
     example ``model=`` on a ``Router``).
@@ -231,6 +244,20 @@ def cached_embed_fn(
                     % (len(missing), tuple(fresh.shape))
                 )
             fresh = np.nan_to_num(fresh, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+            if rows_by_text:
+                # Rows stored under one dimensionality cannot be stacked against rows of
+                # another: a changed embedder (or one whose dimension drifts between calls)
+                # would otherwise surface rows of mixed width, which `_rank` reads as one
+                # matrix. Deciding by identity is what the docstring already asks of the
+                # caller ("clear the cache if the model changes") -- this refuses the call
+                # instead of returning a matrix that silently mixes both.
+                want = next(iter(rows_by_text.values())).shape[0]
+                if fresh.shape[1] != want:
+                    raise ValueError(
+                        "embed_fn returned dim %d, but the cache holds dim %d; "
+                        "call cache_clear() if the model behind embed_fn changed"
+                        % (fresh.shape[1], want)
+                    )
             with lock:
                 for key, row in zip(missing, fresh):
                     rows_by_text[key] = row
