@@ -162,6 +162,21 @@ pub fn normalise_name(name: &str) -> Result<String> {
     }
 }
 
+/// Registry spec for a checkpoint name or alias, or `None` when it is not one.
+///
+/// The non-raising sibling of [`normalise_name`], for callers that also accept things the registry
+/// knows nothing about — a Hub repo id, a local directory. Those pass through untouched; a name or
+/// alias the registry does know resolves to its `(repo, subfolder)` pair, so `Agent::load`
+/// (`"typed-decisions"`, `"ml"`, …) and `Router` name the same checkpoint from one table (upstream
+/// `resolve_model_spec`).
+pub fn resolve_model_spec(name: &str) -> Option<ModelSpec> {
+    let key = normalise_name(name).ok()?;
+    default_models()
+        .into_iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, spec)| spec)
+}
+
 /// Name of the typed-decisions workflow whose question ids these are (exact id-set match), else None.
 pub fn match_typed_decisions_workflow(questions: &Questions) -> Option<String> {
     let ids: BTreeSet<&str> = questions.keys().map(|s| s.as_str()).collect();

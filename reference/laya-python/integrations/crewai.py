@@ -55,7 +55,10 @@ class LayaTaskGuardError(ValueError):
 # `predict` call and the same laya-serve request body, and three copies of the rule is how two of
 # them came to forward only `model`.
 from ._controls import budget_kwargs as _budget_kwargs, hook_kwargs as _hook_kwargs  # noqa: E402
+from ._controls import decision_kwargs as _decision_kwargs  # noqa: E402
 from ._controls import predict_kwargs as _predict_kwargs, reject_remote_hooks as _reject_remote_hooks  # noqa: E402
+from ._guard import score_violation_probability as _score_violation_probability  # noqa: E402
+from ..confidence import _gate_confidence  # noqa: E402
 
 # One class for every integration, so `except LayaLowConfidenceError` catches all of them.
 from ._errors import LayaLowConfidenceError  # noqa: E402
@@ -146,11 +149,15 @@ def _call_remote(
     timeout: float = 10.0,
     max_len: Optional[int] = None,
     head_max_len: Optional[int] = None,
+    lang: Optional[str] = None,
+    min_confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Send decision request to a remote laya-serve HTTP instance using standard library urllib.
 
     `max_len` / `head_max_len` travel in the body; laya-serve applies them up to its
-    `LAYA_MAX_TOKEN_BUDGET` ceiling and answers a larger value with 422.
+    `LAYA_MAX_TOKEN_BUDGET` ceiling and answers a larger value with 422. `lang` / `min_confidence`
+    ride in the same body (they are laya-serve `BODY_CONTROLS` too): the language codes the state
+    is routed and answered in, and core's abstention gate.
     """
     url = base_url.rstrip("/")
     if not url.endswith("/v1/systemone"):
@@ -163,6 +170,10 @@ def _call_remote(
         payload["max_len"] = max_len
     if head_max_len is not None:
         payload["head_max_len"] = head_max_len
+    if lang is not None:
+        payload["lang"] = lang
+    if min_confidence is not None:
+        payload["min_confidence"] = min_confidence
 
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -204,6 +215,8 @@ def _execute_decision(
     model: Optional[str] = None,
     max_len: Optional[int] = None,
     head_max_len: Optional[int] = None,
+    lang: Optional[str] = None,
+    min_confidence: Optional[float] = None,
     hooks: Optional[Any] = None,
     on_predict_start: Optional[Any] = None,
     on_predict_end: Optional[Any] = None,
@@ -219,9 +232,11 @@ def _execute_decision(
     if base_url:
         _reject_remote_hooks(hook_kwargs, base_url)
         budget = _budget_kwargs(max_len, head_max_len)
-        return _call_remote(base_url, state, questions, api_key=api_key, model=model, **budget)
+        decision = _decision_kwargs(lang, min_confidence)
+        return _call_remote(base_url, state, questions, api_key=api_key, model=model,
+                            **budget, **decision)
     runner = agent if agent is not None else _get_default_router()
-    kwargs = _predict_kwargs(model, max_len, head_max_len)
+    kwargs = _predict_kwargs(model, max_len, head_max_len, lang, min_confidence)
     kwargs.update(hook_kwargs)
     return runner.predict(state, questions, **kwargs)
 
@@ -245,6 +260,8 @@ class LayaCrewRouter:
         model: Optional[str] = None,
         max_len: Optional[int] = None,
         head_max_len: Optional[int] = None,
+        lang: Optional[str] = None,
+        min_confidence: Optional[float] = None,
         hooks: Optional[Any] = None,
         on_predict_start: Optional[Any] = None,
         on_predict_end: Optional[Any] = None,
@@ -261,6 +278,8 @@ class LayaCrewRouter:
         self.model = model
         self.max_len = max_len
         self.head_max_len = head_max_len
+        self.lang = lang
+        self.min_confidence = min_confidence
         self.hooks = hooks
         self.on_predict_start = on_predict_start
         self.on_predict_end = on_predict_end
@@ -297,6 +316,8 @@ class LayaCrewRouter:
             model=self.model,
             max_len=self.max_len,
             head_max_len=self.head_max_len,
+            lang=self.lang,
+            min_confidence=self.min_confidence,
             hooks=self.hooks,
             on_predict_start=self.on_predict_start,
             on_predict_end=self.on_predict_end,
@@ -307,7 +328,13 @@ class LayaCrewRouter:
 
         ans = res.get("answers", {}).get("delegation", {})
         chosen_key = ans.get("choice")
-        conf = ans.get("answer_confidence", ans.get("confidence", 1.0))
+        # Gate on the same number core's `flag_low_confidence` gates on: `answer_confidence`
+        # first, falling back to the entropy `confidence` so an answer that carries only the
+        # older field is still gated rather than silently passed (fail-closed). An answer with
+        # no usable number at all is treated as fully confident.
+        conf = _gate_confidence(ans)
+        if conf is None:
+            conf = 1.0
 
         # Map agent_i back to integer index i
         chosen_idx: int = 0
@@ -414,12 +441,16 @@ class LayaTaskGuard:
         model: Optional[str] = None,
         max_len: Optional[int] = None,
         head_max_len: Optional[int] = None,
+        lang: Optional[str] = None,
+        min_confidence: Optional[float] = None,
         hooks: Optional[Any] = None,
         on_predict_start: Optional[Any] = None,
         on_predict_end: Optional[Any] = None,
         hooks_raise: Optional[bool] = None,
         hooks_timeout: Optional[float] = None,
     ):
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be a probability in [0, 1]; got %r" % (threshold,))
         self.questions = questions
         self.action = action
         self.rejection_message = rejection_message
@@ -430,6 +461,8 @@ class LayaTaskGuard:
         self.model = model
         self.max_len = max_len
         self.head_max_len = head_max_len
+        self.lang = lang
+        self.min_confidence = min_confidence
         self.hooks = hooks
         self.on_predict_start = on_predict_start
         self.on_predict_end = on_predict_end
@@ -455,6 +488,8 @@ class LayaTaskGuard:
             model=self.model,
             max_len=self.max_len,
             head_max_len=self.head_max_len,
+            lang=self.lang,
+            min_confidence=self.min_confidence,
             hooks=self.hooks,
             on_predict_start=self.on_predict_start,
             on_predict_end=self.on_predict_end,
@@ -472,11 +507,17 @@ class LayaTaskGuard:
                     "probability": ans["noul"],
                     "confidence": ans.get("confidence", 0.0),
                 }
-            elif t == "score" and ans.get("score", 0.0) >= self.threshold:
-                violations[qid] = {
-                    "score": ans["score"],
-                    "confidence": ans.get("confidence", 0.0),
-                }
+            elif t == "score":
+                # `score` is the expected level (0..k-1), not a probability: gate on the
+                # probability that the level is at or above the middle of the scale.
+                levels = len(qdefs.get(qid, {}).get("criteria") or [])
+                p_violation = _score_violation_probability(ans, levels)
+                if p_violation >= self.threshold:
+                    violations[qid] = {
+                        "score": ans.get("score", 0.0),
+                        "probability": round(p_violation, 4),
+                        "confidence": ans.get("confidence", 0.0),
+                    }
 
         is_safe = len(violations) == 0
 

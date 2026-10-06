@@ -362,10 +362,50 @@
   {
     "input": "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
     "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0294,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "jag behöver hjälp med min faktura",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0606,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "kan inte logga in",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "glömt mitt lösenord",
+    "script": "latin",
+    "language": "sv",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.1053,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "min konto kommer ja",
+    "script": "latin",
     "language": null,
     "is_english": false,
     "language_undecided": true,
-    "diacritic_rate": 0.0294,
+    "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
   }

@@ -66,6 +66,14 @@ LANG_INPUTS = [
     "We met at the café for a naïve chat about the résumé and the soirée plans",
     # Rescue denied: more than one word carries a non-English letter (Swedish two/gånger), #350.
     "Jag har blivit debiterad två gånger och vill ha pengarna tillbaka nu",
+    # Swedish detection (upstream feat/lang Swedish): a long sentence, a short login request that
+    # carries one English-shaped token (`in`) but a distinctive Swedish phrase, a two/three-word
+    # support fragment below the four-token minimum, and a Danish-overlap line that names no
+    # language yet still reads non-English (nordic_overlap) so it leaves the English checkpoint.
+    "jag behöver hjälp med min faktura",
+    "kan inte logga in",
+    "glömt mitt lösenord",
+    "min konto kommer ja",
 ]
 
 EMAIL_INPUTS = [
@@ -83,6 +91,15 @@ EMAIL_INPUTS = [
     "From: my side the whole integration works, but I was charged twice and need a refund please.",
     # A bare `From: Name` header followed by a `Sent:` line IS a reply header and cuts.
     "I need a refund for the duplicate charge.\n\nFrom: Maria Souza\nSent: Monday\nOld quoted reply text here",
+    # French mail clients (upstream feat/email French): Gmail's `Le ... a écrit :` attribution with
+    # a `Cordialement,` sign-off, Apple's `Envoyé depuis mon iPhone` footer, a confidentiality
+    # disclaimer, and Outlook's spaced `De :` / `Envoyé :` reply header.
+    "Bonjour,\n\nJe voudrais un remboursement pour la double facturation.\n\nCordialement,\nMarie Dupont\n\nLe lun. 1 janv. 2024 à 10:00, Jean <jean@x.com> a écrit :\n> message cité ici",
+    "J'ai besoin d'aide avec ma commande.\n\nEnvoyé depuis mon iPhone",
+    "Ce message est confidentiel et destiné uniquement au destinataire. Si vous avez reçu ce message par erreur, veuillez le supprimer.",
+    "Je veux un remboursement.\n\nDe : Marie Dupont\nEnvoyé : lundi\nancien message cité",
+    # Negative: a French closing word followed by a real request is not a sign-off and stays.
+    "Merci de bien vouloir traiter ma demande de remboursement rapidement.",
 ]
 
 ROUTER_INPUTS = [
@@ -105,6 +122,8 @@ ROUTER_INPUTS = [
     # string value on its own catches it (upstream #384). Routes multilingual, no mixed_segment.
     {"a_log": "please help me with the account issue and the refund for the order " * 80,
      "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
+    # Swedish routes to the multilingual checkpoint now that `lang` names it (upstream Swedish).
+    "jag behöver hjälp med min faktura",
 ]
 
 

@@ -182,6 +182,83 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
             .into_iter()
             .collect(),
         );
+        // Swedish function words and common auxiliaries. Several overlap with English or German
+        // (`i`, `kan`, `har`), so the distinctive words below are what lets Swedish text survive an
+        // ASCII-normalising ticket pipeline without treating one stray Nordic letter as the only
+        // hint. ASCII-normalised variants sit beside the diacritic forms.
+        m.insert(
+            "sv",
+            [
+                "jag",
+                "är",
+                "och",
+                "inte",
+                "att",
+                "från",
+                "till",
+                "behöver",
+                "får",
+                "skulle",
+                "ska",
+                "vill",
+                "måste",
+                "också",
+                "dessa",
+                "detta",
+                "säger",
+                "upp",
+                "utan",
+                "mitt",
+                "min",
+                "om",
+                "kommer",
+                "här",
+                "två",
+                "vi",
+                "nästa",
+                "gör",
+                "göra",
+                "hjälp",
+                "hjälpa",
+                "mig",
+                "återbetalning",
+                "återbetala",
+                "faktura",
+                "gång",
+                "gånger",
+                "hittar",
+                "inställningen",
+                "inställningarna",
+                "lösenord",
+                "när",
+                "öppnar",
+                "spårningen",
+                "aterbetalning",
+                "aterbetala",
+                "behover",
+                "fel",
+                "ganger",
+                "hjalp",
+                "hjalpa",
+                "installningen",
+                "installningarna",
+                "kraschar",
+                "kvittot",
+                "losenord",
+                "nar",
+                "oppnar",
+                "paket",
+                "skicka",
+                "sparningen",
+                "tva",
+                "uppdaterats",
+                "blivit",
+                "debiterade",
+                "appen",
+            ]
+            .into_iter()
+            .collect(),
+        );
         m.insert(
             "ro",
             [
@@ -330,7 +407,57 @@ fn non_en_diacritics() -> &'static HashSet<char> {
     S.get_or_init(|| DIACRITICS.chars().collect())
 }
 
-/// Words that more than one list claims.
+/// Short support fragments (two or three words) that identify Swedish on their own, below the
+/// four-token minimum the general guess needs. Generic words such as `fel`, `hjälp`, `paket` and
+/// `appen` are deliberately not sufficient here. ASCII-normalised variants sit beside the diacritic
+/// forms (upstream `_SHORT_SWEDISH_WORDS`).
+fn short_swedish_words() -> &'static HashSet<&'static str> {
+    static S: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    S.get_or_init(|| {
+        [
+            "åtkomst",
+            "atkomst",
+            "lösenord",
+            "losenord",
+            "fakturan",
+            "betalningen",
+            "inloggningen",
+            "glömt",
+            "glomt",
+            "behöver",
+            "behover",
+            "återbetalning",
+            "aterbetalning",
+            "kvitto",
+            "kvittot",
+            "spårningen",
+            "sparningen",
+            "inställningen",
+            "installningen",
+            "felmeddelande",
+            "abonnemanget",
+        ]
+        .into_iter()
+        .collect()
+    })
+}
+
+/// Danish is not in `_STOP`, but several of its common words also occur in the Swedish list. These
+/// words alone must not name a Danish sentence as Swedish; they stay useful score hits when a more
+/// distinctive Swedish word is present. Folded into [`shared_words`] (upstream
+/// `_NORDIC_OVERLAP_WORDS`).
+fn nordic_overlap_words() -> &'static HashSet<&'static str> {
+    static S: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    S.get_or_init(|| {
+        [
+            "hej", "ja", "nej", "jo", "tack", "mig", "min", "om", "kommer", "får", "skulle", "vi",
+        ]
+        .into_iter()
+        .collect()
+    })
+}
+
+/// Words that more than one list claims, plus the Nordic (Swedish/Danish) overlap words.
 fn shared_words() -> &'static HashSet<&'static str> {
     static S: OnceLock<HashSet<&'static str>> = OnceLock::new();
     S.get_or_init(|| {
@@ -340,11 +467,13 @@ fn shared_words() -> &'static HashSet<&'static str> {
                 *counts.entry(*w).or_insert(0) += 1;
             }
         }
-        counts
+        let mut shared: HashSet<&'static str> = counts
             .into_iter()
             .filter(|(_, n)| *n > 1)
             .map(|(w, _)| w)
-            .collect()
+            .collect();
+        shared.extend(nordic_overlap_words().iter().copied());
+        shared
     })
 }
 
@@ -680,12 +809,36 @@ pub fn latin_profile(text: &str) -> LatinProfile {
     let diac_rate = diac as f64 / (std::cmp::max(1, len) as f64);
     let non_english = diac_rate >= NON_EN_DIACRITIC_RATE;
 
+    // A shared Swedish/Danish marker with no English-only word present leans the undecided cases
+    // toward the multilingual checkpoint (upstream `nordic_overlap`).
+    let word_set_all: HashSet<&str> = words.iter().copied().collect();
+    let en_only = en_only_words();
+    let nordic_overlap = word_set_all
+        .iter()
+        .any(|w| nordic_overlap_words().contains(*w))
+        && !word_set_all.iter().any(|w| en_only.contains(*w));
+
+    // Short support fragments: two or three distinctive Swedish words name Swedish outright.
+    if words.len() > 1
+        && words.len() < 4
+        && word_set_all
+            .iter()
+            .any(|w| short_swedish_words().contains(*w))
+    {
+        return LatinProfile {
+            language: Some("sv".to_string()),
+            english_hits: 0,
+            diacritic_rate: diac_rate,
+            looks_non_english: non_english,
+        };
+    }
+
     if words.len() < 4 {
         return LatinProfile {
             language: None,
             english_hits: 0,
             diacritic_rate: diac_rate,
-            looks_non_english: non_english,
+            looks_non_english: non_english || nordic_overlap,
         };
     }
 
@@ -710,8 +863,6 @@ pub fn latin_profile(text: &str) -> LatinProfile {
     }
     let en = scores.get("en").copied().unwrap_or(0);
 
-    let word_set: HashSet<&str> = words.iter().copied().collect();
-
     // Only a language that matched at least one word no other list claims may be named.
     let mut best_lg: Option<&'static str> = None;
     let mut best: i64 = 0;
@@ -719,7 +870,7 @@ pub fn latin_profile(text: &str) -> LatinProfile {
         if *lg == "en" {
             continue;
         }
-        let has_evidence = word_set
+        let has_evidence = word_set_all
             .iter()
             .any(|w| sw.contains(*w) && !shared.contains(*w));
         if !has_evidence {
@@ -733,24 +884,36 @@ pub fn latin_profile(text: &str) -> LatinProfile {
     }
 
     let mut language: Option<String> = None;
-    if let Some(bl) = best_lg {
-        // A non-English language needs a clear margin over English function words, or (with
-        // non-English letters present) at least a two-hit tie. Mirrors the elif ladder in
-        // laya/lang.py, with the two "name best_lg" branches combined.
-        if best >= std::cmp::max(2, en + 2) || (non_english && best >= std::cmp::max(2, en)) {
-            language = Some(bl.to_string());
-        } else if en > 0 && (!non_english || english_rescued_by_words(&words, diac_rate)) {
-            language = Some("en".to_string());
-        }
+    // Mirrors the elif ladder in laya/lang.py.
+    if best_lg.is_some() && best >= std::cmp::max(2, en + 2) {
+        // a non-English language needs a clear margin over English function words
+        language = best_lg.map(|s| s.to_string());
+    } else if best_lg == Some("sv")
+        && word_set_all.contains("inte")
+        && word_set_all.contains("kan")
+        && matches!(
+            words.first().copied(),
+            Some("kan") | Some("jag") | Some("vi")
+        )
+        && en <= 1
+    {
+        // Short login requests such as "kan inte logga in" carry a distinctive Swedish phrase but
+        // also one English-shaped token (`in`). Do not treat `kan` alone as Swedish: it is common
+        // in Danish and Norwegian too.
+        language = best_lg.map(|s| s.to_string());
+    } else if best_lg.is_some() && non_english && best >= std::cmp::max(2, en) {
+        // Needs two hits here too. One shared function word named a language on diacritics alone.
+        language = best_lg.map(|s| s.to_string());
     } else if en > 0 && (!non_english || english_rescued_by_words(&words, diac_rate)) {
         language = Some("en".to_string());
     }
 
+    let looks_non_english = non_english || (language.is_none() && nordic_overlap);
     LatinProfile {
         language,
         english_hits: en as usize,
         diacritic_rate: diac_rate,
-        looks_non_english: non_english,
+        looks_non_english,
     }
 }
 
