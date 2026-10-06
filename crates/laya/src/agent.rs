@@ -79,9 +79,23 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Load a Laya checkpoint from a local directory or a Hugging Face repo id.
-    pub fn load(model_id_or_path: &str, opts: LoadOptions) -> Result<Agent> {
-        let files = resolve_files(model_id_or_path, &opts)?;
+    /// Load a Laya checkpoint from a local directory, a Hugging Face repo id, or a registry
+    /// checkpoint name or alias (the same ones `Router` resolves: `"typed-decisions"`, `"ml"`, …).
+    ///
+    /// A bare name or alias resolves to the same `(repo, subfolder)` the `Router` would pick,
+    /// instead of being handed to the Hub as a repo id. A caller who spelled out a `subfolder` is
+    /// loading that subfolder of whatever repo they named, so the name is only resolved when it is
+    /// the whole argument, and only when it does not already look like a local path or name a
+    /// directory that holds a checkpoint (upstream `load` name resolution + `_is_local_checkpoint_arg`).
+    pub fn load(model_id_or_path: &str, mut opts: LoadOptions) -> Result<Agent> {
+        let mut repo = model_id_or_path.to_string();
+        if opts.subfolder.is_none() && !is_local_checkpoint_arg(model_id_or_path) {
+            if let Some((spec_repo, sub)) = crate::router::resolve_model_spec(model_id_or_path) {
+                repo = spec_repo;
+                opts.subfolder = sub;
+            }
+        }
+        let files = resolve_files(&repo, &opts)?;
 
         let cfg: Value = serde_json::from_slice(&std::fs::read(&files.config)?)?;
         let encoder_config: Value = serde_json::from_slice(&std::fs::read(&files.encoder_config)?)?;
@@ -759,6 +773,28 @@ fn to_internal(qdef: &Value) -> Result<InternalQ> {
 }
 
 /// Resolve the four checkpoint files from a local dir or a Hugging Face repo id.
+/// True when `model_id_or_path` should be treated as a local path, not a registry name. A bare word
+/// with no path separator reads as a name/alias; only treat it as a path when it looks like one
+/// (contains a separator, or starts with `.`/`~`) or when the named directory actually holds a Laya
+/// checkpoint (`rl_agent_config.json`). So `load("laya")` resolves the alias while `load("./laya")`
+/// and a real checkpoint directory still load from disk (upstream `_is_local_checkpoint_arg`).
+fn is_local_checkpoint_arg(model_id_or_path: &str) -> bool {
+    if model_id_or_path.is_empty() {
+        return false;
+    }
+    if model_id_or_path.starts_with('.') || model_id_or_path.starts_with('~') {
+        return true;
+    }
+    if model_id_or_path.contains('/')
+        || model_id_or_path.contains('\\')
+        || model_id_or_path.contains(std::path::MAIN_SEPARATOR)
+    {
+        return true;
+    }
+    let dir = Path::new(model_id_or_path);
+    dir.is_dir() && dir.join("rl_agent_config.json").is_file()
+}
+
 fn resolve_files(model_id_or_path: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
     let base = Path::new(model_id_or_path);
     if base.exists() {
@@ -846,6 +882,19 @@ fn download_files(repo: &str, opts: &LoadOptions) -> Result<CheckpointFiles> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_checkpoint_arg_detects_paths_but_not_bare_names() {
+        // Bare names/aliases are not local paths: they resolve through the registry.
+        assert!(!is_local_checkpoint_arg("typed-decisions"));
+        assert!(!is_local_checkpoint_arg("laya"));
+        assert!(!is_local_checkpoint_arg(""));
+        // Path-shaped arguments are local.
+        assert!(is_local_checkpoint_arg("./laya"));
+        assert!(is_local_checkpoint_arg("~/laya"));
+        assert!(is_local_checkpoint_arg("org/repo"));
+        assert!(is_local_checkpoint_arg("../ckpt"));
+    }
 
     #[test]
     fn rejects_null_score_level() {

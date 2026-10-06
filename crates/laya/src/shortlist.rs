@@ -10,6 +10,8 @@ use crate::Questions;
 use serde_json::{json, Map, Value};
 
 pub const DEFAULT_SHORTLIST_K: usize = 20;
+/// Default group size for [`predict_tournament`], matching `DEFAULT_TOURNAMENT_GROUP` upstream.
+pub const DEFAULT_TOURNAMENT_GROUP: usize = 16;
 /// Defaults matching `embed_fn_from_agent` in `laya/shortlist.py`.
 pub const DEFAULT_EMBED_MAX_LENGTH: usize = 512;
 pub const DEFAULT_EMBED_BATCH_SIZE: usize = 32;
@@ -39,7 +41,11 @@ pub fn embed_fn_from_agent(
 
 /// Return the top-`k` choice labels for `state`, ranked by cosine similarity of `embed_fn`
 /// vectors (query first, then one per option in criteria order). When `k >= n`, every label is
-/// returned in original order and `embed_fn` is not called. Ties keep the earlier label.
+/// returned in original order and `embed_fn` is not called.
+///
+/// Ranking is a signed cosine, not a similarity floor: a label that scores 0 (no signal, or a
+/// non-finite vector treated as one) outranks an earlier label that scored negative, and `k` drops
+/// the negative labels first. Ties keep the earlier label.
 pub fn shortlist_choice<F>(
     state: &Value,
     criteria: &Value,
@@ -50,8 +56,25 @@ pub fn shortlist_choice<F>(
 where
     F: Fn(&[String]) -> Vec<Vec<f64>>,
 {
-    let (labels, _scores, _passthrough, _n) = rank(state, criteria, embed_fn, k, instructions)?;
-    Ok(labels)
+    Ok(shortlist_choice_scored(state, criteria, embed_fn, k, instructions)?.0)
+}
+
+/// Like [`shortlist_choice`] but also returns the signed cosine of each kept label, in rank order
+/// — the same values [`predict_shortlist`] reports in its `shortlist` metadata. The score vector is
+/// `None` when nothing was dropped (passthrough), exactly as in that metadata. Mirrors
+/// `shortlist_choice(..., return_scores=True)` in `laya/shortlist.py`.
+pub fn shortlist_choice_scored<F>(
+    state: &Value,
+    criteria: &Value,
+    embed_fn: F,
+    k: usize,
+    instructions: Option<&str>,
+) -> Result<(Vec<String>, Option<Vec<f64>>)>
+where
+    F: Fn(&[String]) -> Vec<Vec<f64>>,
+{
+    let (labels, scores, _passthrough, _n) = rank(state, criteria, embed_fn, k, instructions)?;
+    Ok((labels, scores))
 }
 
 /// Shortlist each choice question, then run the agent once on the reduced question set.
@@ -109,6 +132,137 @@ where
     out.as_object_mut()
         .unwrap()
         .insert("shortlist".to_string(), Value::Object(meta));
+    Ok(out)
+}
+
+/// Per-choice-question tournament bookkeeping.
+struct TournamentEntry {
+    /// The labels still in the running, in criteria order.
+    labels: Vec<String>,
+    /// The original label count.
+    n: usize,
+    /// How many elimination rounds this question went through.
+    rounds: usize,
+}
+
+/// Narrow each large choice question by elimination, then call the agent once more. Unlike
+/// [`predict_shortlist`] this needs no embedder: a choice with more than `group_size` labels is cut,
+/// in criteria order, into near-equal groups of at most `group_size`, and one `system_one` call
+/// answers every group of every such question (they share one forward pass). Each group's winner
+/// advances; rounds repeat until no choice has more than `group_size` labels left. The final call
+/// answers the full `questions` with each contested choice cut to its finalists.
+///
+/// The returned dict is the final call's result plus a `tournament` entry: `tournament[qid]` holds
+/// `labels` (the finalists, in criteria order), `n` (the original label count) and `rounds`.
+/// Probabilities come from the final call, so a tournament choice's probabilities are over its
+/// finalists only. The caller's `questions` is not mutated. Mirrors `predict_tournament` upstream.
+pub fn predict_tournament(
+    agent: &Agent,
+    state: &Value,
+    questions: &Questions,
+    group_size: usize,
+) -> Result<Value> {
+    if group_size < 2 {
+        return Err(LayaError::InvalidQuestion(format!(
+            "group_size must be an integer of at least 2, got {}",
+            group_size
+        )));
+    }
+
+    // meta, in question order, for every choice question.
+    let mut meta: Vec<(String, TournamentEntry)> = Vec::new();
+    for (qid, qdef) in questions {
+        if qdef.get("type").and_then(|v| v.as_str()) == Some("choice") {
+            let criteria = qdef.get("criteria").ok_or_else(|| {
+                LayaError::InvalidQuestion(format!(
+                    "question {:?} is a choice but has no criteria",
+                    qid
+                ))
+            })?;
+            let labels = criteria_keys(criteria)?;
+            let n = labels.len();
+            meta.push((
+                qid.clone(),
+                TournamentEntry {
+                    labels,
+                    n,
+                    rounds: 0,
+                },
+            ));
+        }
+    }
+
+    let cut = |qid: &str, labels: &[String]| -> Value {
+        let qdef = &questions[qid];
+        let mut updated = qdef.clone();
+        updated["criteria"] = subset_criteria(qdef.get("criteria").unwrap(), labels);
+        updated
+    };
+
+    loop {
+        // Each element: (meta index, this group's labels), in group order across all questions.
+        let mut groups: Vec<(usize, Vec<String>)> = Vec::new();
+        for (idx, (_qid, e)) in meta.iter().enumerate() {
+            let len = e.labels.len();
+            let parts = len.div_ceil(group_size);
+            if parts > 1 {
+                for i in 0..parts {
+                    let lo = i * len / parts;
+                    let hi = (i + 1) * len / parts;
+                    groups.push((idx, e.labels[lo..hi].to_vec()));
+                }
+            }
+        }
+        if groups.is_empty() {
+            break;
+        }
+        let mut round_qs: Questions = Questions::new();
+        for (i, (idx, labels)) in groups.iter().enumerate() {
+            let qid = meta[*idx].0.clone();
+            round_qs.insert(i.to_string(), cut(&qid, labels));
+        }
+        let answers_json = agent.system_one(state, &round_qs)?.to_json();
+        let answers = answers_json
+            .get("answers")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| {
+                LayaError::InvalidQuestion("agent result missing 'answers'".to_string())
+            })?;
+        let mut winners: Vec<Vec<String>> = vec![Vec::new(); meta.len()];
+        for (i, (idx, _labels)) in groups.iter().enumerate() {
+            let choice = answers
+                .get(&i.to_string())
+                .and_then(|a| a.get("choice"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            winners[*idx].push(choice);
+        }
+        for (idx, (_qid, e)) in meta.iter_mut().enumerate() {
+            if !winners[idx].is_empty() {
+                e.labels = std::mem::take(&mut winners[idx]);
+                e.rounds += 1;
+            }
+        }
+    }
+
+    let mut final_qs: Questions = questions.clone();
+    for (qid, e) in &meta {
+        if e.rounds > 0 {
+            final_qs.insert(qid.clone(), cut(qid, &e.labels));
+        }
+    }
+    let mut out = agent.system_one(state, &final_qs)?.to_json();
+    let mut tmeta = Map::new();
+    for (qid, e) in &meta {
+        tmeta.insert(
+            qid.clone(),
+            json!({ "labels": e.labels, "n": e.n, "rounds": e.rounds }),
+        );
+    }
+    out.as_object_mut()
+        .unwrap()
+        .insert("tournament".to_string(), Value::Object(tmeta));
     Ok(out)
 }
 
@@ -266,4 +420,45 @@ fn cosine(query: &[f64], docs: &[Vec<f64>]) -> Vec<f64> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Deterministic 2-D embeddings keyed by first char, so cosine ranking is predictable without a
+    // model: the query points at the "b" direction, so "b" ranks above "a"/"c".
+    fn stub_embed(texts: &[String]) -> Vec<Vec<f64>> {
+        texts
+            .iter()
+            .map(|t| match t.chars().next() {
+                Some('a') => vec![1.0, 0.0],
+                Some('b') => vec![0.0, 1.0],
+                Some('c') => vec![0.7, 0.7],
+                _ => vec![0.0, 1.0], // the query points at "b"
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scored_returns_signed_cosine_in_rank_order() {
+        let criteria = json!(["a", "b", "c"]);
+        let (labels, scores) =
+            shortlist_choice_scored(&json!("question"), &criteria, stub_embed, 2, None).unwrap();
+        assert_eq!(labels, vec!["b".to_string(), "c".to_string()]);
+        let scores = scores.expect("scores present when labels were dropped");
+        assert_eq!(scores.len(), 2);
+        // Descending, and "b" is the exact match (cosine 1.0).
+        assert!(scores[0] >= scores[1]);
+        assert!((scores[0] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scored_passthrough_has_no_scores() {
+        let criteria = json!(["a", "b"]);
+        let (labels, scores) =
+            shortlist_choice_scored(&json!("q"), &criteria, stub_embed, 5, None).unwrap();
+        assert_eq!(labels, vec!["a".to_string(), "b".to_string()]);
+        assert!(scores.is_none());
+    }
 }

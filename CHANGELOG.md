@@ -3,6 +3,80 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.5 — tracks upstream Laya 0.3.28 (upstream @a4a8921)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @6d942c9, 0.3.22) that
+affect the Rust surface, up to the 0.3.28 release. The golden parity fixtures were regenerated from
+upstream 0.3.28 and gained Swedish and French cases that exercise the new behaviour; they are
+byte-for-byte identical to upstream on every case. Vendored `reference/` snapshots synced to upstream
+@a4a8921.
+
+### Added
+- **Swedish language detection.** A Swedish stop list joins the Latin-script guess, plus a short
+  two/three-word fragment list that names Swedish below the four-token minimum (`glömt mitt
+  lösenord`), a login-phrase branch that reads a distinctive Swedish phrase carrying one
+  English-shaped token (`kan inte logga in`), and a Swedish/Danish overlap set that leaves an
+  undecided Nordic line on the multilingual checkpoint rather than the English one. ASCII-normalised
+  spellings sit beside the diacritic forms so Swedish survives a ticket pipeline that strips its
+  letters (upstream `feat(lang)` Swedish).
+- **French mail-client cleaning.** `clean_email_body` now cuts French quoted history, signatures,
+  device footers and confidentiality disclaimers alongside its EN/PT/ES peers: Gmail's `Le … a
+  écrit :`, Outlook's `-----Message d'origine-----` and spaced `De :` / `Envoyé :` reply headers,
+  `Cordialement` / `Merci` sign-offs, `Envoyé depuis mon iPhone`, and the `ce message … confidentiel`
+  footer (upstream `feat(email)` French / French device-footer spacing).
+- **`shortlist_choice_scored` and `predict_tournament`.** `shortlist_choice_scored` returns the
+  signed cosine of each kept label beside the labels, matching `shortlist_choice(...,
+  return_scores=True)`. `predict_tournament` narrows each large choice question by elimination — one
+  shared forward pass per round, no embedder — then answers the full request with each contested
+  choice cut to its finalists, adding a `tournament` report (upstream `feat(shortlist)`).
+- **`Agent::load` resolves checkpoint names and aliases.** A bare registry name or alias
+  (`typed-decisions`, `ml`) now resolves to the same `(repo, subfolder)` the `Router` picks instead
+  of being handed to the Hub as a repo id; a path-shaped argument or a directory that holds a
+  checkpoint still loads from disk (upstream `load` name resolution + `_is_local_checkpoint_arg`;
+  exposed as `router::resolve_model_spec`).
+- **CLI `--lang-guess`.** A soft language hint used only when the built-in detector is undecided,
+  unlike `--lang` which overrides it — the single-request CLI counterpart of the body control
+  `laya-serve` already forwards (upstream `feat(cli)` soft language hint).
+- **`laya-serve` honours `LAYA_DEFAULT_MODEL` and `LAYA_JEV_STRICT`.** `LAYA_DEFAULT_MODEL` sets the
+  routing fallback for the two states carrying no language evidence (a typo is fatal, not silently
+  ignored). `LAYA_JEV_STRICT` projects the response onto the strict Jev wire contract — dropping the
+  root `routing` block, each answer's `action` and `answer_confidence`, the `confidence` on `noul`
+  answers, and the extended `usage` — for a client that rejects fields the contract does not define
+  (upstream `feat(serve)` `LAYA_DEFAULT_MODEL` / `LAYA_JEV_STRICT`).
+
+### Fixed (serve)
+- **`laya-serve` rejects a null score level with 422.** A `score` question whose level list holds a
+  `null` is a hole in the rubric — the answer's legend would carry `{"<i>": null}`, which a Jev
+  client cannot parse — so it is refused at request time naming the question and index, instead of a
+  200 with an unparseable legend (upstream #302).
+- **`GET /health` no longer leaks deployment internals without the bearer.** On a server locked down
+  with `LAYA_API_KEY`, `/health` now answers liveness only (`{"status":"ok"}`, still 200) unless the
+  request carries a valid bearer; the resident checkpoint names and device are behind the key, as
+  `POST /v1/systemone` already was. With no key configured the full payload stays open (upstream
+  #812).
+- **`laya-serve` refuses unpublished path-like model ids with 422.** A `model` that names a
+  filesystem path or an unpublished Hub `org/repo` id (anything starting with `.`/`~` or containing a
+  slash, other than the auto-route bundle id) is refused rather than silently auto-routed to a
+  checkpoint the caller did not ask for; a bare Jev id such as `jev-1` still auto-routes (upstream
+  #919).
+
+### Notes on upstream changes not needing (or not applicable to) a Rust change
+- **Parallel option layout** (`option_layout: "parallel"`, PCW attention) needs transformers≥5 and a
+  checkpoint trained for it; every published checkpoint stays sequential and its path is unchanged,
+  so porting it changes nothing for supported models.
+- **The `laya-train` CLI and dataset loaders**, the **per-option-count abstention thresholds**,
+  **abstention-gate state reporting** (`apply_confidence_gate`), the **`predict_long` window budget
+  and scan**, **`predict_batch` per-call controls / split passes / usage merge**, the **idle-unload
+  worker**, the **checkpoint registry** (`Router(models=…)`), **revision/digest pinning** (and its
+  case-folding fix), **`structured` `$defs` resolution**, the **Metal/CUDA cache release**,
+  **torch.compile / AOTInductor / autocast / backend layer**, and **ONNX / MCP** changes all live on
+  torch/Python/batch/hooks/calibration surfaces the Rust port does not have: it is native candle,
+  single-request, with no hooks, no batch path, no calibration plumbing, and no train/ONNX/MCP.
+- **`check_min_confidence`/`clamp_temperature` rejecting a bool**, the **CLI UTF-8 output fixes**,
+  and the **`agent` reject-non-scalar-choice-label allow-list** are already the Rust port's
+  behaviour: its types are statically typed (a temperature is `f64`, a choice label is one of
+  `serde_json`'s six `Value` variants), and it writes UTF-8 natively.
+
 ## 0.2.4 — tracks upstream Laya 0.3.22 (upstream @6d942c9)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @9d95567) that affect the

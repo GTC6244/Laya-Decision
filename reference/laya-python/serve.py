@@ -5,8 +5,8 @@ API -- ``choice`` / ``score`` / ``noul`` answers and a ``{input_tokens,
 output_tokens}`` usage block -- so a client written against Jev (for example the
 `hs-jev` Haskell client) can point its ``baseUrl`` at this server and keep
 working unchanged. All this module adds is the HTTP surface Laya itself does not
-ship: a ``POST /v1/systemone`` route, an optional bearer check, and a health
-probe.
+ship: a ``POST /v1/systemone`` route and its ``POST /v1/systemone/batch`` sibling,
+an optional bearer check, and a health probe.
 
 Configuration is entirely via environment variables so the same entry point
 serves a laptop dev run and a systemd unit:
@@ -24,14 +24,23 @@ env var                    meaning                                        defaul
                            Keep <= physical cores; oversubscribing the     default)
                            logical/hyperthread count is a large regression.
 ``LAYA_AUTO_TASK``         auto-route to the typed-decisions checkpoint   0
+``LAYA_DEFAULT_MODEL``     fallback checkpoint when a state carries no   (english)
+                           language evidence; aliases like ml work
 ``LAYA_MAX_LOADED``        checkpoints kept resident at once. Below what  2
                            routing can choose, one reloads per switch.
+``LAYA_IDLE_UNLOAD_SECONDS`` unload checkpoints after this many idle     0 (off)
+                           seconds; the next request loads them again.
 ``LAYA_API_KEY``           if set, require ``Authorization: Bearer <it>``  (none)
 ``LAYA_ROOT_PATH``         public URL prefix behind a reverse proxy        (none)
 ``LAYA_LOG_LEVEL``         uvicorn log level                              info
 ``LAYA_MAX_CONCURRENT``    cap on requests past auth at once; excess      16
                            gets 503 (see below)
 ``LAYA_MAX_TOKEN_BUDGET``  cap on per-request max_len / head_max_len       8192
+``LAYA_JEV_STRICT``        if set, serve the strict Jev wire contract: no   0
+                           root `routing`, no per-answer `action` /
+                           `answer_confidence`, no `confidence` on noul
+                           answers, and `usage` reduced to
+                           `input_tokens` + `output_tokens`
 =========================  ============================================  =========
 
 ``LAYA_DEVICE`` is a preference, not a guarantee: an ``Agent`` that asks for a
@@ -46,6 +55,7 @@ and touches no GPU -- which is what keeps the Nix ``pythonImportsCheck`` honest.
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -65,6 +75,37 @@ MAX_QUESTIONS = 64
 MAX_STATE_CHARS = 50000
 MAX_BATCH_STATES = 64
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# `/v1/systemone/batch` collates `states x questions` rows into ONE tensor, and each of the caps
+# above bounds only one factor: 64 states of 64 questions is 4096 rows from a 4.1 KB body, with every
+# documented limit satisfied, and `batch_size` defaults to `None`, which `predict_batch` documents as
+# "sends them all in one pass". Measured on the english checkpoint, CPU: ~127-142 ms per row at its
+# `max_len` of 512, roughly flat to 128 rows, so 4096 rows is minutes inside one forward pass while
+# the single inference gate is held.
+#
+# What a row COSTS is its width, and `max_len` is a request field capped only by
+# `DEFAULT_MAX_TOKEN_BUDGET` (8192) -- 16x the english checkpoint's own 512. 256 rows at 8192 is the
+# same 2 097 152 tokens as 4096 rows at 512 and collates the same tensor, so a bound on rows is the
+# wrong bound. The budget below is therefore in tokens.
+#
+# It CHUNKS rather than refuses. A refusal would need this number to be right about hardware serve
+# cannot see: measured here, peak RSS did not move at all between 32, 64 and 128 rows (flat at
+# 1151 MB), so the memory ceiling this would have been protecting was never reached at any size that
+# could be measured, and a 4096-row batch may be entirely reasonable on a larger machine. Splitting
+# the work bounds what one forward pass collates without refusing any request, which is the part that
+# can be justified. What it does NOT bound is how long one request holds the inference gate -- that is
+# `LAYA_MAX_CONCURRENT` and the single-worker pool's business, and is already true of a single
+# `/v1/systemone` request over a 50 000-character state.
+#
+# 131072 is 256 rows at `_BATCH_ROW_TOKENS_ASSUMED`. Chosen so every shape that fits it goes through
+# in ONE pass exactly as before -- byte-identical, since `batch_size` is then not passed at all -- and
+# only larger shapes are split. That makes the number low-stakes: too low over-chunks, too high
+# under-chunks, and neither refuses anything.
+DEFAULT_MAX_BATCH_TOKENS = 131072
+# The row width assumed when a request does not set `max_len`. serve cannot know the routed
+# checkpoint's own `max_len` without loading it, so this is the shipped english value; multilingual
+# is 1024, which this under-counts by 2x, meaning a multilingual batch chunks half as aggressively as
+# the budget intends.
+_BATCH_ROW_TOKENS_ASSUMED = 512
 # HTTP-only amplification guard; the library keeps its head_max_len-aware budget.
 MAX_CHOICE_OPTIONS = 100
 MAX_SCORE_LEVELS = 32
@@ -74,6 +115,14 @@ MAX_TOTAL_OPTIONS = 512
 # before inference, so without a bound many concurrent near-cap requests OOM
 # the worker even though every request is individually valid (#330).
 DEFAULT_MAX_CONCURRENT = 16
+
+# What `GET /health` answers an unauthenticated caller when `LAYA_API_KEY` is set. Liveness is
+# the half of that endpoint a container probe needs and the half the page promises is always
+# open; the rest of the payload names checkpoints, revision SHAs and host device state, so it
+# is for a caller who can authenticate. A deployment with no key set gets the full payload, as
+# it always has. Kept a module constant rather than a dict literal in the handler so the field
+# contract in tests/test_serve.py still reads the full payload off `health()`'s own `return`.
+LIVENESS_ONLY = {"status": "ok"}
 # Server-side ceiling on per-request max_len/head_max_len token budget overrides.
 DEFAULT_MAX_TOKEN_BUDGET = 8192
 
@@ -88,12 +137,64 @@ DEFAULT_MAX_TOKEN_BUDGET = 8192
 BODY_CONTROLS = ("model", "max_len", "head_max_len", "task", "lang", "lang_guess", "min_confidence")
 BODY_REFUSALS = ("hooks", "on_predict_start", "on_predict_end", "hooks_raise", "hooks_timeout")
 
+# ``Router.predict_batch`` reads two different kinds of control: call-level keyword arguments that
+# apply to the whole batch (chunking, padding, the abstention threshold) and per-request keys that
+# it lifts off each item of ``requests`` (checkpoint, task, language hint, token budget). The batch
+# endpoint keeps them in separate tuples so a caller-visible JSON body -- one set of controls that
+# applies to every state it sent -- is turned into both. ``tests/test_serve.py`` pins the two lists
+# against ``inspect.signature(Router.predict_batch)`` (call-level) and against the MCP tool's own
+# item key list (per-request), so a control added to either side has to be placed on one side of
+# this split -- forwarded, refused, or moved to the item tuple -- before the suite goes green.
+# ``hooks_timeout`` is refused on the batch path the same way it is on the single path: it belongs
+# to ``predict_batch``'s call-level args but governs how the *deployment's* hooks execute, so a
+# caller cannot be allowed to shorten or lengthen that deadline from an HTTP body.
+BATCH_BODY_CALL_CONTROLS = ("batch_size", "min_confidence", "sort_by_length")
+BATCH_BODY_ITEM_CONTROLS = ("max_len", "head_max_len", "task", "lang", "lang_guess")
+
 
 def _env_bool(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _project_jev_strict(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a result onto the strict Jev wire contract (`LAYA_JEV_STRICT`).
+
+    The Jev `/v1/systemone` response defines exactly three top-level fields
+    (`model`, `answers`, `usage`), and each answer carries only its type's fields:
+    choice = `choice` + `probabilities` + `confidence`, score = `score` +
+    `probabilities` + `confidence` + `legend`, noul = `noul` only, and `usage` the
+    two token counts. Laya's full payload adds more: a root `routing` report, a
+    per-answer `action` head plus the calibrated `answer_confidence`, a
+    `confidence` on noul answers, and a usage report extended with the truncation
+    facts and the collapsed-options ceiling. Those additions are what a client
+    validating the response against the contract with no extra fields may reject,
+    so this keeps only the contracted keys. Nothing is recomputed: every value is
+    the one the result already carries, and an answer of an unknown shape passes
+    through unchanged so a caller still sees what it would have seen before.
+    """
+    answers: Dict[str, Any] = {}
+    for qid, answer in (result.get("answers") or {}).items():
+        kind = answer.get("type") if isinstance(answer, dict) else None
+        if kind == "choice":
+            answers[qid] = {"type": "choice", "choice": answer["choice"],
+                            "confidence": answer["confidence"],
+                            "probabilities": answer["probabilities"]}
+        elif kind == "score":
+            answers[qid] = {"type": "score", "score": answer["score"],
+                            "confidence": answer["confidence"],
+                            "probabilities": answer["probabilities"],
+                            "legend": answer["legend"]}
+        elif kind == "noul":
+            answers[qid] = {"type": "noul", "noul": answer["noul"]}
+        else:
+            answers[qid] = answer
+    usage = result.get("usage") or {}
+    return {"model": result["model"], "answers": answers,
+            "usage": {"input_tokens": usage.get("input_tokens", 0),
+                      "output_tokens": usage.get("output_tokens", 0)}}
 
 
 def _published_model_ids() -> Dict[str, str]:
@@ -111,23 +212,58 @@ def _published_model_ids() -> Dict[str, str]:
     return {repo: name for name, repo in STANDALONE_MODELS.items() if repo != BUNDLE_REPO}
 
 
+def _names_unpublished_source(text: str) -> bool:
+    """True when `text` is a filesystem path or a Hub repo id, not a checkpoint name.
+
+    A slash or backslash is how both a path and a `org/repo` id are written. A leading
+    ``.`` or ``~`` is a relative or home path with no slash yet (``./ckpt``, ``~/ckpt``).
+    Checkpoint names, aliases and a Jev id such as ``jev-1`` have none of those, so they
+    are not this. Published ids are matched before the caller asks.
+    """
+    if not text:
+        return False
+    if text[0] in ".~":
+        return True
+    return "/" in text or "\\" in text
+
+
 def _resolve_model(model: Optional[str]) -> Optional[str]:
-    """Map a client's `model` field onto a Laya checkpoint, or None to auto-route."""
+    """Map a client's `model` field onto a Laya checkpoint, or None to auto-route.
+
+    A Jev id such as ``jev-1``, and the bundle id ``convaiinnovations/laya``, stay None:
+    both mean "let the Router choose". A path or an unpublished Hub repo id is a
+    different miss. Swallowing it used to answer with whichever checkpoint routing
+    picked, which is a wrong answer. That request is a 422 instead.
+    """
     if not model:
         return None
-    published = _published_model_ids().get(str(model).strip().lower())
+    text = str(model).strip()
+    published = _published_model_ids().get(text.lower())
     if published is not None:
         return published
-    from .router import normalise_name
+    from .router import BUNDLE_REPO, normalise_name
 
+    # The root bundle is the one Hub id whose documented meaning is auto-route, not a pin.
+    # It contains a slash, so the path check below would otherwise refuse it.
+    if text.lower() == BUNDLE_REPO:
+        return None
     # normalise_name raises ValueError on anything that is not a known checkpoint
     # or alias, and returns a name from router.DEFAULT_MODELS when it does accept one --
     # so it is the only list of accepted names this needs. A Jev client's `model` field
     # (e.g. "jev-1") is expected to miss; treat that as "no explicit checkpoint" and let
-    # the router auto-select.
+    # the router auto-select. A path or unpublished Hub id is not that miss: the caller
+    # named a checkpoint this server cannot load, the same refusal `validate_model` gives
+    # an MCP client, reported as this endpoint's 422.
     try:
         return normalise_name(model)
-    except Exception:
+    except ValueError as error:
+        if _names_unpublished_source(text):
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=422,
+                detail="%s, or omit model to let the router choose" % error,
+            ) from None
         return None
 
 
@@ -143,6 +279,21 @@ def _resolve_max_concurrent() -> int:
     return n if n > 0 else DEFAULT_MAX_CONCURRENT
 
 
+def _resolve_idle_unload_seconds() -> float:
+    """Idle window from LAYA_IDLE_UNLOAD_SECONDS; zero disables unloading."""
+    raw = os.environ.get("LAYA_IDLE_UNLOAD_SECONDS", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    if not math.isfinite(seconds):
+        _log.warning("invalid LAYA_IDLE_UNLOAD_SECONDS %r; idle unload disabled", raw)
+        return 0.0
+    return seconds if seconds > 0 else 0.0
+
+
 def _resolve_max_token_budget() -> int:
     """Server-side cap on per-request max_len from LAYA_MAX_TOKEN_BUDGET."""
     raw = os.environ.get("LAYA_MAX_TOKEN_BUDGET")
@@ -156,6 +307,28 @@ def _resolve_max_token_budget() -> int:
     if n <= 0:
         _log.warning("LAYA_MAX_TOKEN_BUDGET must be positive (got %d); falling back to %d", n, DEFAULT_MAX_TOKEN_BUDGET)
         return DEFAULT_MAX_TOKEN_BUDGET
+    return n
+
+
+def _resolve_max_batch_tokens() -> int:
+    """Tokens one batch FORWARD PASS may collate, from LAYA_MAX_BATCH_TOKENS.
+
+    Sizes the chunk, it does not refuse: see the constant's own comment for why a refusal would need
+    this number to be right about hardware this process cannot see.
+    """
+    raw = os.environ.get("LAYA_MAX_BATCH_TOKENS")
+    if not raw:
+        return DEFAULT_MAX_BATCH_TOKENS
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log.warning("invalid LAYA_MAX_BATCH_TOKENS %r; falling back to %d", raw,
+                     DEFAULT_MAX_BATCH_TOKENS)
+        return DEFAULT_MAX_BATCH_TOKENS
+    if n <= 0:
+        _log.warning("LAYA_MAX_BATCH_TOKENS must be positive (got %d); falling back to %d", n,
+                     DEFAULT_MAX_BATCH_TOKENS)
+        return DEFAULT_MAX_BATCH_TOKENS
     return n
 
 
@@ -239,6 +412,52 @@ def _validate_min_confidence(body: Dict[str, Any]) -> Optional[float]:
         raise HTTPException(status_code=422, detail=str(error)) from None
 
 
+def _validate_batch_size_param(body: Dict[str, Any]) -> Optional[int]:
+    """Validate the optional ``batch_size`` call argument on the batch endpoint (422).
+
+    ``Router.predict_batch`` reads it as the maximum number of states per Agent forward-pass batch,
+    so a non-positive or fractional value would either mean "one state per pass" or crash torch.
+    A boolean would be truthy and coerce to 1/0, which is not what the caller meant; refusing here
+    matches what the MCP tool's own validator does at ``laya/mcp/tools.py:_validate_batch_size``,
+    so the same typo is rejected the same way on both surfaces.
+    """
+    from fastapi import HTTPException
+
+    if "batch_size" not in body:
+        return None
+    val = body["batch_size"]
+    if val is None:
+        return None
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise HTTPException(status_code=422, detail="batch_size must be an integer")
+    if val < 1:
+        raise HTTPException(status_code=422,
+                            detail="batch_size must be a positive integer, got %r" % (val,))
+    return val
+
+
+def _validate_sort_by_length_param(body: Dict[str, Any]) -> Optional[bool]:
+    """Validate the optional ``sort_by_length`` call argument on the batch endpoint (422).
+
+    ``Router.predict_batch`` forwards this verbatim to every ``Agent.predict_batch`` call, and an
+    agent that predates the knob drops it. Only the boolean is a meaningful value here -- a string
+    would be truthy and take the sort path silently. When the caller asks for ``False`` we still
+    forward ``None`` rather than ``False``, because ``predict_batch``'s own default is ``False``:
+    an absent argument means "the caller did not ask" and cannot override a deployment that built
+    its Router with the knob already on.
+    """
+    from fastapi import HTTPException
+
+    if "sort_by_length" not in body:
+        return None
+    val = body["sort_by_length"]
+    if val is None:
+        return None
+    if not isinstance(val, bool):
+        raise HTTPException(status_code=422, detail="sort_by_length must be a boolean")
+    return val
+
+
 def _resolve_max_loaded() -> Optional[int]:
     """Resident-checkpoint cap from ``LAYA_MAX_LOADED``; ``None`` leaves it to ``Router``.
 
@@ -262,6 +481,35 @@ def _resolve_max_loaded() -> Optional[int]:
     except ValueError:
         return None
     return n if n > 0 else None
+
+
+def _default_model_option() -> Dict[str, str]:
+    """Routing fallback from ``LAYA_DEFAULT_MODEL``, as a ``Router`` keyword; unset sends nothing.
+
+    ``Router.default`` answers the two states that carry no language evidence at all: no letters,
+    and Latin script too short to identify ("Quero cancelar", "Esqueci minha senha"). The README
+    tells a deployment whose traffic is mostly non-English to set ``Router(default="multilingual")``,
+    and this is the only way such a deployment can say so without writing its own server. Left out
+    of the constructor when unset, so the value cannot drift from ``Router``'s own default -- the
+    same reasoning as ``_resolve_max_loaded`` above.
+
+    The name goes through ``normalise_name``, so the accepted set and its aliases are core's and
+    not a list restated here. Unlike the numeric knobs, a typo here has no harmless fallback: a
+    silently-ignored value would keep routing the ambiguous states to the checkpoint the operator
+    just said cannot read them, so this raises and the caller refuses to start rather than serve a
+    configuration nobody asked for. ``laya.mcp.server`` turns the same error into a ``ToolError``,
+    because a stdio server has no startup to refuse.
+    """
+    raw = os.environ.get("LAYA_DEFAULT_MODEL")
+    if raw is None or not raw.strip():
+        return {}
+    from .router import normalise_name
+
+    try:
+        name = normalise_name(raw)
+    except ValueError as error:
+        raise ValueError("invalid LAYA_DEFAULT_MODEL %r: %s" % (raw.strip(), error)) from None
+    return {"default": name}
 
 
 def _resolve_port() -> int:
@@ -431,6 +679,15 @@ def _check_request_limits(state: Any, questions: Any) -> None:
                     status_code=413,
                     detail="too many score levels for %r (%d > %d)" % (qid, count, MAX_SCORE_LEVELS),
                 )
+            # A null level is a hole in the rubric: the answer's `legend` would carry
+            # `{"<i>": null}`, which a Jev client's schema refuses to parse (#302). Reject it as a
+            # malformed request rather than answering 200 with an unparseable legend.
+            if None in crit:
+                raise HTTPException(
+                    status_code=422,
+                    detail="score question %r has a null level at index %d; give every level a "
+                           "description" % (qid, crit.index(None)),
+                )
     if total_options > MAX_TOTAL_OPTIONS:
         raise HTTPException(
             status_code=413,
@@ -441,6 +698,28 @@ def _check_request_limits(state: Any, questions: Any) -> None:
     if state_len > MAX_STATE_CHARS:
         raise HTTPException(status_code=413,
                             detail="state too large (%d > %d chars)" % (state_len, MAX_STATE_CHARS))
+
+
+def _batch_chunk_size(n_states: int, n_questions: int, max_len: Any = None) -> Optional[int]:
+    """States per forward pass so one pass stays inside the token budget, or None to change nothing.
+
+    `None` means "send them all in one pass", which is `predict_batch`'s own default, so a request
+    whose rows already fit is passed no `batch_size` at all and behaves byte-identically -- important
+    because `predict_batch` warns that changing batch shapes can move floating-point results, and a
+    request that works today must not start answering differently.
+
+    A single state cannot be split further, so a batch chunks down to one state per pass and no
+    lower: at that point one pass carries `n_questions` rows, which is exactly what one
+    `/v1/systemone` request can already ask for.
+    """
+    if n_states <= 0 or n_questions <= 0:
+        return None
+    width = (max_len if isinstance(max_len, int) and not isinstance(max_len, bool) and max_len > 0
+             else _BATCH_ROW_TOKENS_ASSUMED)
+    if n_states * n_questions * width <= _resolve_max_batch_tokens():
+        return None
+    rows_per_pass = max(1, _resolve_max_batch_tokens() // width)
+    return max(1, min(n_states, rows_per_pass // n_questions))
 
 
 def _check_batch_limits(states: Any, questions: Any) -> None:
@@ -460,6 +739,11 @@ def _check_batch_limits(states: Any, questions: Any) -> None:
 # strings, and `re.search` scans each at C speed, where the per-character Python loop this
 # replaced cost ~170 ms on a near-cap body on the event loop.
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+# The answer both decision routes give to the same malformed body, written once so they cannot
+# drift: `tests/test_serve.py` asserts this text on `/v1/systemone` and on `/v1/systemone/batch`.
+_LONE_SURROGATE_DETAIL = ("request body contains an unpaired surrogate escape; "
+                          "those cannot be encoded as UTF-8")
 
 
 def _has_lone_surrogate(value: Any) -> bool:
@@ -566,6 +850,12 @@ def build_router():
     max_loaded = _resolve_max_loaded()
     if max_loaded is not None:
         options["max_loaded"] = max_loaded
+    # Resolved before the Router is built: a name `Router` would reject is a configuration error,
+    # and `_resolve_port`'s idiom applies -- exit with the message, not a traceback.
+    try:
+        options.update(_default_model_option())
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     router = Router(**options)
     if _env_bool("LAYA_PRELOAD", True):
         router.preload(preload_names)
@@ -577,6 +867,7 @@ def create_app(router: Optional[Any] = None):
     is built from the environment (and preloaded) at app-creation time."""
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
 
     from fastapi import FastAPI, Header, HTTPException, Request
 
@@ -606,11 +897,53 @@ def create_app(router: Optional[Any] = None):
     max_concurrent = _resolve_max_concurrent()
     admission: Optional[asyncio.Semaphore] = None
 
+    idle_unload_seconds = _resolve_idle_unload_seconds()
+    last_request = time.monotonic()
+
+    def _mark_request():
+        nonlocal last_request
+        last_request = time.monotonic()
+
+    def _run_inference(fn):
+        try:
+            return fn()
+        finally:
+            # On the worker, including failures and cancelled HTTP requests whose forward
+            # pass continues after the event loop releases the gate.
+            _mark_request()
+
+    def _unload_if_idle():
+        # Recheck on the inference worker: a queued unload must see any forward pass that
+        # finished after the reaper checked the gate. Unload and inference never overlap.
+        idle_for = time.monotonic() - last_request
+        if idle_for >= idle_unload_seconds and router.loaded:
+            router.unload()
+            _log.info("idle for %.1fs: unloaded resident checkpoints", idle_for)
+
+    async def _idle_reaper():
+        interval = max(0.05, min(idle_unload_seconds / 4.0, 5.0))
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(interval)
+            if gate is not None and gate.locked():
+                continue
+            try:
+                await loop.run_in_executor(pool, _unload_if_idle)
+            except Exception:  # noqa: BLE001 -- a failed unload must not stop future attempts
+                _log.exception("idle unload failed")
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        reaper = asyncio.create_task(_idle_reaper()) if idle_unload_seconds else None
         try:
             yield
         finally:
+            if reaper is not None:
+                reaper.cancel()
+                try:
+                    await reaper
+                except asyncio.CancelledError:
+                    pass
             # TestClient, embedded ASGI apps, and process supervisors all need
             # the executor to drain when the app stops.
             pool.shutdown(wait=True, cancel_futures=True)
@@ -631,20 +964,33 @@ def create_app(router: Optional[Any] = None):
     # client can send now answers 401.
     expected_auth = ("Bearer " + api_key).encode("utf-8", "surrogateescape") if api_key else b""
 
-    def _check_auth(authorization: Optional[str]) -> None:
+    def _authorized(authorization: Optional[str]) -> bool:
+        """Whether this request carries the configured bearer. True when no key is set."""
         if api_key is None:
-            return
+            return True
         supplied = (authorization or "").encode("utf-8", "surrogateescape")
-        if not hmac.compare_digest(supplied, expected_auth):
+        return hmac.compare_digest(supplied, expected_auth)
+
+    def _check_auth(authorization: Optional[str]) -> None:
+        if not _authorized(authorization):
             raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
     @app.get("/health")
-    def health() -> Dict[str, Any]:
+    def health(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
         # `device` is where a resident checkpoint really computes, not what was asked for:
         # `Agent.device` reflects the silent GPU -> CPU fallback, so a container that asked
         # for a GPU it did not get says so. With nothing resident it is the configured
         # preference, and `device_is_preference` tells the reader which of the two it is
         # looking at. Same convention, and the same three keys, as `laya_status` over MCP.
+        # Liveness stays open, because every shipped probe reads it without a credential
+        # (compose.http.yaml's healthcheck, the Docker HEALTHCHECK, a k8s liveness probe) and
+        # the page promises as much. What is not open on a locked-down deployment is the detail
+        # below it: resident checkpoint names, their exact revision SHAs, the device state and
+        # each checkpoint's last fallback reason, which quotes host hardware. An unauthenticated
+        # caller gets the status and nothing else (#812).
+        if not _authorized(authorization):
+            return LIVENESS_ONLY
+
         checkpoint_devices: Dict[str, str] = {}
         for name in (router.loaded or []):
             device = agent_device(router_agent(router, name))
@@ -664,6 +1010,8 @@ def create_app(router: Optional[Any] = None):
             agent = router_agent(router, name)
             fallbacks[name] = {"count": getattr(agent, "cpu_fallback_count", 0),
                                "last_reason": getattr(agent, "last_fallback_reason", None)}
+        idle = ({"idle_unload_seconds": idle_unload_seconds,
+                 "idle_seconds": round(time.monotonic() - last_request, 1)} if idle_unload_seconds else {})
         return {
             "status": "ok",
             "loaded": router.loaded,
@@ -672,6 +1020,7 @@ def create_app(router: Optional[Any] = None):
             "device_is_preference": actual is None,
             "checkpoint_devices": checkpoint_devices,
             "cpu_fallbacks": fallbacks,
+            **idle,
         }
 
     @asynccontextmanager
@@ -700,6 +1049,7 @@ def create_app(router: Optional[Any] = None):
 
     async def _systemone_inner(request: Request):
         nonlocal gate
+        _mark_request()
         body = await _read_json_body(request)
         if not isinstance(body, dict) or "questions" not in body:
             raise HTTPException(status_code=400, detail="request body must be an object with a 'questions' field")
@@ -714,9 +1064,7 @@ def create_app(router: Optional[Any] = None):
         # "inference failed". A *paired* surrogate is an ordinary astral character (an emoji) by
         # the time `json.loads` is done, so only lone ones are rejected here.
         if _has_lone_surrogate(body):
-            raise HTTPException(status_code=400,
-                                detail="request body contains an unpaired surrogate escape; "
-                                       "those cannot be encoded as UTF-8")
+            raise HTTPException(status_code=400, detail=_LONE_SURROGATE_DETAIL)
         model = _resolve_model(body.get("model"))
         max_budget_cap = _resolve_max_token_budget()
         max_len = _validate_budget_param(body, "max_len", max_budget_cap)
@@ -749,13 +1097,11 @@ def create_app(router: Optional[Any] = None):
             async with gate:
                 loop = asyncio.get_running_loop()
                 t0 = time.perf_counter()
-                if predict_kwargs:
-                    result = await loop.run_in_executor(
-                        pool, lambda: router.predict(state, questions, model=model, **predict_kwargs))
-                else:
-                    result = await loop.run_in_executor(
-                        pool, lambda: router.predict(state, questions, model=model))
+                result = await loop.run_in_executor(
+                    pool, _run_inference, partial(router.predict, state, questions, model=model, **predict_kwargs))
                 infer_ms = (time.perf_counter() - t0) * 1000.0
+                if _env_bool("LAYA_JEV_STRICT", False):
+                    result = _project_jev_strict(result)
                 from fastapi.responses import JSONResponse
                 return JSONResponse(
                     content=result,
@@ -789,6 +1135,7 @@ def create_app(router: Optional[Any] = None):
 
     async def _systemone_batch_inner(request: Request):
         nonlocal gate
+        _mark_request()
         body = await _read_json_body(request)
         if not isinstance(body, dict) or "questions" not in body or "states" not in body:
             raise HTTPException(
@@ -798,7 +1145,73 @@ def create_app(router: Optional[Any] = None):
         states = body["states"]
         questions = body["questions"]
         _check_batch_limits(states, questions)
+        # Same refusal policy as the single endpoint: hooks and the two hook-execution knobs
+        # belong to the deployment, not the caller. `predict_batch` does take `hooks_timeout`,
+        # so without this call a batch body would silently hand a caller a shorter deadline for
+        # the operator's own hooks.
+        _refuse_body_refusals(body)
+        # The same guard `/v1/systemone` runs, for the same reason, and it has to walk the whole
+        # body rather than one state because that is what the batch carries: `predict_batch`
+        # tokenizes every state and every question here, so a lone `\udXXX` escape in any of them
+        # raises `TypeError` from the tokenizer and this route's `except Exception` reports the
+        # caller's own string as a 500 "inference failed" -- with a traceback per request. Ordered
+        # as on the single route: after the size checks, so `MAX_BATCH_STATES`, `MAX_STATE_CHARS`
+        # and `MAX_QUESTIONS` bound what the walk can reach.
+        if _has_lone_surrogate(body):
+            raise HTTPException(status_code=400, detail=_LONE_SURROGATE_DETAIL)
         model = _resolve_model(body.get("model"))
+        max_budget_cap = _resolve_max_token_budget()
+        max_len = _validate_budget_param(body, "max_len", max_budget_cap)
+        head_max_len = _validate_budget_param(body, "head_max_len", max_budget_cap)
+        # Every control is sent only when the caller sent it, matching `_systemone_inner`: an
+        # absent argument means "inherit what the Router was built with", so passing None would
+        # override a deployment's own `Router(lang_guess=...)` or abstention threshold.
+        # ``Router.predict_batch`` reads task / lang / lang_guess / max_len / head_max_len off
+        # each item of ``requests`` (see its docstring), so they go into every synthesized
+        # request dict; the HTTP body has one control set for the whole batch, which the Router
+        # still honours -- it groups the requests by these values for the forward pass.
+        item_overrides: Dict[str, Any] = {}
+        if max_len is not None:
+            item_overrides["max_len"] = max_len
+        if head_max_len is not None:
+            item_overrides["head_max_len"] = head_max_len
+        # An unknown task is left to `route_batch`, which normalises it through `normalise_name`
+        # and raises; the `except ValueError` below turns that into a 422 naming the task, so the
+        # accepted set is core's and not a list restated here.
+        if body.get("task") is not None:
+            item_overrides["task"] = body["task"]
+        for key in ("lang", "lang_guess"):
+            value = _validate_language_param(body, key)
+            if value is not None:
+                item_overrides[key] = value
+        # Call-level: `predict_batch` takes min_confidence / batch_size / sort_by_length as kwargs.
+        call_kwargs: Dict[str, Any] = {}
+        min_confidence = _validate_min_confidence(body)
+        if min_confidence is not None:
+            call_kwargs["min_confidence"] = min_confidence
+        batch_size = _validate_batch_size_param(body)
+        if batch_size is not None:
+            call_kwargs["batch_size"] = batch_size
+        else:
+            # The caller's own `batch_size` always wins -- they asked for a shape. Otherwise split the
+            # batch so one forward pass stays inside the token budget. `None` when it already fits, so
+            # nothing is passed and the call is the one it has always been.
+            planned = _batch_chunk_size(
+                len(states), len(questions) if isinstance(questions, dict) else 0,
+                body.get("max_len"))
+            if planned is not None:
+                call_kwargs["batch_size"] = planned
+        sort_by_length = _validate_sort_by_length_param(body)
+        if sort_by_length:
+            # Only `True` is forwarded: `predict_batch`'s own default is `False`, and an attached
+            # agent whose `predict_batch` predates the knob (#294) silently drops it. The MCP
+            # tool makes the same choice for the same reason (see ``laya/mcp/tools.py``).
+            call_kwargs["sort_by_length"] = True
+        # The predict() fallback shape: `Router.predict` reads all six controls as call kwargs,
+        # so the item dict is flattened back and `min_confidence` joins it.
+        predict_kwargs: Dict[str, Any] = dict(item_overrides)
+        if min_confidence is not None:
+            predict_kwargs["min_confidence"] = min_confidence
         if gate is None:
             gate = asyncio.Lock()
         try:
@@ -807,19 +1220,26 @@ def create_app(router: Optional[Any] = None):
 
                 def _do_batch():
                     if hasattr(router, "predict_batch"):
-                        reqs = [{"state": s, "questions": questions, "model": model} for s in states]
-                        results = router.predict_batch(reqs)
+                        reqs = [dict(state=s, questions=questions, model=model, **item_overrides)
+                                for s in states]
+                        results = router.predict_batch(reqs, **call_kwargs)
+                    elif predict_kwargs:
+                        results = [router.predict(s, questions, model=model, **predict_kwargs)
+                                   for s in states]
                     else:
                         results = [router.predict(s, questions, model=model) for s in states]
-                    total_tokens = sum(r.get("usage", {}).get("input_tokens", 0) for r in results)
+                    total_in = sum(r.get("usage", {}).get("input_tokens", 0) for r in results)
+                    total_out = sum(r.get("usage", {}).get("output_tokens", 0) for r in results)
                     return {
                         "results": results,
-                        "total_usage": {"input_tokens": total_tokens, "output_tokens": 0},
+                        "total_usage": {"input_tokens": total_in, "output_tokens": total_out},
                     }
 
                 t0 = time.perf_counter()
-                batch_res = await loop.run_in_executor(pool, _do_batch)
+                batch_res = await loop.run_in_executor(pool, _run_inference, _do_batch)
                 infer_ms = (time.perf_counter() - t0) * 1000.0
+                if _env_bool("LAYA_JEV_STRICT", False):
+                    batch_res["results"] = [_project_jev_strict(item) for item in batch_res["results"]]
                 from fastapi.responses import JSONResponse
                 return JSONResponse(
                     content=batch_res,

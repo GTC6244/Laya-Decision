@@ -12,7 +12,9 @@
 //! | `LAYA_PRELOAD`   | build checkpoints at startup, not lazily             | 1       |
 //! | `LAYA_MODELS`    | comma list to preload (english,multilingual,typed-decisions) | (all) |
 //! | `LAYA_AUTO_TASK` | auto-route to the typed-decisions checkpoint         | 0       |
+//! | `LAYA_DEFAULT_MODEL` | routing fallback for states with no language evidence | english |
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
+//! | `LAYA_JEV_STRICT`| project responses onto the strict Jev wire contract  | 0       |
 //! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
 
 use std::net::SocketAddr;
@@ -26,7 +28,7 @@ use axum::{
     Json, Router as AxumRouter,
 };
 use laya::error::LayaError;
-use laya::router::{normalise_name, RouteHints, Router, RouterOptions};
+use laya::router::{normalise_name, RouteHints, Router, RouterOptions, BUNDLE_REPO};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
@@ -71,6 +73,59 @@ struct AppState {
     admission: Arc<Semaphore>,
     api_key: Option<String>,
     device: String,
+    /// `LAYA_JEV_STRICT`: project the response onto the strict Jev wire contract.
+    jev_strict: bool,
+}
+
+/// Project a result onto the strict Jev wire contract (`LAYA_JEV_STRICT`).
+///
+/// The Jev `/v1/systemone` response defines exactly three top-level fields (`model`, `answers`,
+/// `usage`), and each answer carries only its type's fields: choice = `choice` + `probabilities` +
+/// `confidence`, score = those + `legend`, noul = `noul` only. Laya's full payload adds a root
+/// `routing` report, a per-answer `action` head, the calibrated `answer_confidence`, and a
+/// `confidence` on noul answers — the fields a client validating against the contract with no extra
+/// fields may reject. This keeps only the contracted keys; nothing is recomputed, and an answer of
+/// an unknown shape passes through unchanged (upstream `_project_jev_strict`).
+fn project_jev_strict(result: Value) -> Value {
+    let Some(obj) = result.as_object() else {
+        return result;
+    };
+    let mut answers = serde_json::Map::new();
+    if let Some(Value::Object(ans)) = obj.get("answers") {
+        for (qid, answer) in ans {
+            let get = |k: &str| answer.get(k).cloned().unwrap_or(Value::Null);
+            let projected = match answer.get("type").and_then(|v| v.as_str()) {
+                Some("choice") => json!({
+                    "type": "choice",
+                    "choice": get("choice"),
+                    "confidence": get("confidence"),
+                    "probabilities": get("probabilities"),
+                }),
+                Some("score") => json!({
+                    "type": "score",
+                    "score": get("score"),
+                    "confidence": get("confidence"),
+                    "probabilities": get("probabilities"),
+                    "legend": get("legend"),
+                }),
+                Some("noul") => json!({ "type": "noul", "noul": get("noul") }),
+                _ => answer.clone(),
+            };
+            answers.insert(qid.clone(), projected);
+        }
+    }
+    let usage = obj.get("usage").and_then(|v| v.as_object());
+    let token = |k: &str| {
+        usage
+            .and_then(|u| u.get(k))
+            .cloned()
+            .unwrap_or_else(|| json!(0))
+    };
+    json!({
+        "model": obj.get("model").cloned().unwrap_or(Value::Null),
+        "answers": Value::Object(answers),
+        "usage": {"input_tokens": token("input_tokens"), "output_tokens": token("output_tokens")},
+    })
 }
 
 /// Positive integer from an env var, or `default` when unset, empty or unparseable.
@@ -104,24 +159,60 @@ fn resolve_port() -> u16 {
     }
 }
 
-/// Map a client's `model` field onto a Laya checkpoint, or `None` to auto-route.
-fn resolve_model(model: Option<&str>) -> Option<String> {
-    let model = model?;
-    if model.is_empty() {
-        return None;
+/// True when `text` is a filesystem path or a Hub repo id, not a checkpoint name. A slash or
+/// backslash is how both a path and an `org/repo` id are written; a leading `.` or `~` is a
+/// relative or home path with no slash yet (`./ckpt`, `~/ckpt`). Checkpoint names, aliases and a
+/// Jev id such as `jev-1` have none of those (upstream `_names_unpublished_source`).
+fn names_unpublished_source(text: &str) -> bool {
+    match text.chars().next() {
+        None => false,
+        Some('.') | Some('~') => true,
+        _ => text.contains('/') || text.contains('\\'),
     }
-    let published = match model.trim().to_lowercase().as_str() {
+}
+
+/// Map a client's `model` field onto a Laya checkpoint, or `None` to auto-route.
+///
+/// A Jev id such as `jev-1`, and the bundle id `convaiinnovations/laya`, stay `None`: both mean
+/// "let the Router choose". A path or an unpublished Hub repo id is a different miss — swallowing it
+/// would answer with whichever checkpoint routing picked, a wrong answer — so it is a 422 instead
+/// (upstream `_resolve_model` / #919).
+fn resolve_model(model: Option<&str>) -> Result<Option<String>, (StatusCode, Json<Value>)> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let text = model.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let published = match text.to_lowercase().as_str() {
         "convaiinnovations/laya-multilingual" => Some("multilingual"),
         "convaiinnovations/laya-typed-decisions" => Some("typed-decisions"),
         _ => None,
     };
     if let Some(p) = published {
-        return Some(p.to_string());
+        return Ok(Some(p.to_string()));
     }
-    // A Jev client's model id (e.g. "jev-1") is expected to miss; treat as auto-route.
-    match normalise_name(model) {
-        Ok(key) if KNOWN_MODELS.contains(&key.as_str()) => Some(key),
-        _ => None,
+    // The root bundle is the one Hub id whose documented meaning is auto-route, not a pin. It
+    // contains a slash, so the path check below would otherwise refuse it.
+    if text.eq_ignore_ascii_case(BUNDLE_REPO) {
+        return Ok(None);
+    }
+    // A Jev client's model id (e.g. "jev-1") is expected to miss; treat as auto-route. A path or an
+    // unpublished Hub id is not that miss: the caller named a checkpoint this server cannot load.
+    match normalise_name(text) {
+        Ok(key) if KNOWN_MODELS.contains(&key.as_str()) => Ok(Some(key)),
+        Ok(_) => Ok(None),
+        Err(e) => {
+            if names_unpublished_source(text) {
+                Err(err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("{e}, or omit model to let the router choose"),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -151,13 +242,32 @@ fn build_router() -> Router {
     // switch; `preload` still raises the cap to hold whatever it builds, so this never evicts a
     // preloaded checkpoint. Unset/invalid falls back to the default, like `LAYA_MAX_CONCURRENT`.
     let max_loaded = env_usize("LAYA_MAX_LOADED", RouterOptions::default().max_loaded);
-    let router = Router::new(RouterOptions {
+    let mut opts = RouterOptions {
         device,
         auto_task_detection: env_bool("LAYA_AUTO_TASK", false),
         max_loaded,
         ..Default::default()
-    })
-    .expect("router options");
+    };
+    // The routing fallback for the two states carrying no language evidence (no letters, or Latin
+    // script too short to identify). A deployment whose traffic is mostly non-English sets this; a
+    // typo is fatal, since a silently-ignored value would keep routing those states to the wrong
+    // checkpoint (upstream `LAYA_DEFAULT_MODEL` / `_default_model_option`).
+    if let Some(raw) = std::env::var("LAYA_DEFAULT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        match normalise_name(&raw) {
+            Ok(name) => opts.default = name,
+            Err(e) => {
+                eprintln!(
+                    "laya-serve: invalid LAYA_DEFAULT_MODEL {:?}: {e}",
+                    raw.trim()
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+    let router = Router::new(opts).expect("router options");
     if env_bool("LAYA_PRELOAD", true) {
         let models_env = std::env::var("LAYA_MODELS").unwrap_or_default();
         let names: Vec<&str> = models_env
@@ -177,7 +287,22 @@ fn build_router() -> Router {
     router
 }
 
-async fn health(State(app): State<AppState>) -> Json<Value> {
+async fn health(State(app): State<AppState>, headers: HeaderMap) -> Json<Value> {
+    // On a server locked down with `LAYA_API_KEY`, the full payload names the resident checkpoints
+    // and the device — reconnaissance an unauthenticated caller should not get. Without a valid
+    // bearer, answer liveness only. A wrong/absent bearer still gets 200 (not 401) so a plain
+    // liveness probe does not fail; with no key configured the full payload is open as before
+    // (upstream GET /health bearer gate / #812).
+    if let Some(key) = &app.api_key {
+        let expected = format!("Bearer {key}");
+        let supplied = headers
+            .get("authorization")
+            .map(|v| v.as_bytes())
+            .unwrap_or(b"");
+        if !constant_time_eq(supplied, expected.as_bytes()) {
+            return Json(json!({ "status": "ok" }));
+        }
+    }
     Json(json!({
         "status": "ok",
         "loaded": app.router.loaded(),
@@ -302,6 +427,20 @@ async fn systemone(
                         ),
                     ));
                 }
+                // A null level is a hole in the rubric: the answer's `legend` would carry
+                // `{"<i>": null}`, which a Jev client's schema refuses to parse (#302). Reject it as
+                // a malformed request rather than answering 200 with an unparseable legend.
+                if let Some(Value::Array(levels)) = q.get("criteria") {
+                    if let Some(idx) = levels.iter().position(|v| v.is_null()) {
+                        return Err(err(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            &format!(
+                                "score question {qid:?} has a null level at index {idx}; \
+                                 give every level a description"
+                            ),
+                        ));
+                    }
+                }
             }
             _ => {}
         }
@@ -332,7 +471,7 @@ async fn systemone(
         ));
     }
 
-    let model = resolve_model(obj.get("model").and_then(|v| v.as_str()));
+    let model = resolve_model(obj.get("model").and_then(|v| v.as_str()))?;
     // Kept for the server-side log below: `model` itself is moved into the blocking task.
     let model_log = model.clone();
 
@@ -394,6 +533,11 @@ async fn systemone(
 
     match result {
         Ok(Ok(v)) => {
+            let v = if app.jev_strict {
+                project_jev_strict(v)
+            } else {
+                v
+            };
             // Expose the inference time the same way upstream `laya-serve` does, so a client can
             // read it without a separate timing endpoint.
             let mut headers = HeaderMap::new();
@@ -449,6 +593,7 @@ async fn main() {
         admission: Arc::new(Semaphore::new(max_concurrent)),
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,
+        jev_strict: env_bool("LAYA_JEV_STRICT", false),
     };
 
     let app = AxumRouter::new()
@@ -467,4 +612,78 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!("laya-serve listening on http://{addr}");
     axum::serve(listener, app).await.expect("server");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpublished_source_detects_paths_and_repos() {
+        assert!(names_unpublished_source("./ckpt"));
+        assert!(names_unpublished_source("~/ckpt"));
+        assert!(names_unpublished_source("org/secret-model"));
+        assert!(names_unpublished_source("C:\\models\\laya"));
+        // Checkpoint names, aliases and Jev ids are not path-like.
+        assert!(!names_unpublished_source("jev-1"));
+        assert!(!names_unpublished_source("multilingual"));
+        assert!(!names_unpublished_source(""));
+    }
+
+    #[test]
+    fn resolve_model_maps_published_and_auto_routes() {
+        assert_eq!(resolve_model(None).unwrap(), None);
+        assert_eq!(resolve_model(Some("")).unwrap(), None);
+        // Published Hub ids map to checkpoint names.
+        assert_eq!(
+            resolve_model(Some("convaiinnovations/laya-multilingual")).unwrap(),
+            Some("multilingual".to_string())
+        );
+        // Aliases resolve.
+        assert_eq!(
+            resolve_model(Some("ml")).unwrap(),
+            Some("multilingual".to_string())
+        );
+        // The bundle id and a bare Jev id auto-route (None).
+        assert_eq!(resolve_model(Some("convaiinnovations/laya")).unwrap(), None);
+        assert_eq!(resolve_model(Some("jev-1")).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_model_refuses_path_like_misses() {
+        let (code, _) = resolve_model(Some("./my-checkpoint")).unwrap_err();
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        let (code, _) = resolve_model(Some("org/unpublished")).unwrap_err();
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn jev_strict_drops_non_contract_fields() {
+        let full = json!({
+            "model": "laya-rl-agent",
+            "routing": {"model": "english"},
+            "answers": {
+                "q1": {"type": "choice", "choice": "a", "confidence": 0.9,
+                       "answer_confidence": 0.8, "probabilities": {"a": 0.9, "b": 0.1},
+                       "action": {"act_probability": 0.5}},
+                "q2": {"type": "noul", "noul": 0.7, "confidence": 0.7,
+                       "answer_confidence": 0.7, "action": {"act_probability": 0.1}},
+            },
+            "usage": {"input_tokens": 12, "output_tokens": 3, "truncated": false},
+        });
+        let strict = project_jev_strict(full);
+        let obj = strict.as_object().unwrap();
+        assert!(!obj.contains_key("routing"));
+        assert_eq!(
+            obj["usage"],
+            json!({"input_tokens": 12, "output_tokens": 3})
+        );
+        let q1 = &strict["answers"]["q1"];
+        assert!(q1.get("action").is_none());
+        assert!(q1.get("answer_confidence").is_none());
+        assert_eq!(q1["choice"], json!("a"));
+        let q2 = &strict["answers"]["q2"];
+        // noul keeps only type + noul.
+        assert_eq!(q2, &json!({"type": "noul", "noul": 0.7}));
+    }
 }

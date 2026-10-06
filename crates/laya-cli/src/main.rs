@@ -66,6 +66,10 @@ struct Cli {
     /// Force a language, e.g. en or de, instead of detecting it.
     #[arg(long)]
     lang: Option<String>,
+    /// A soft language hint, e.g. en or de: used only when the built-in detector is undecided,
+    /// unlike --lang which overrides it (upstream cli `lang_guess`).
+    #[arg(long = "lang-guess", value_name = "CODE")]
+    lang_guess: Option<String>,
     /// Force a typed-decisions workflow instead of detecting it.
     #[arg(long)]
     task: Option<String>,
@@ -100,7 +104,7 @@ fn hints(cli: &Cli) -> RouteHints<'_> {
             .filter(|m| !m.trim().eq_ignore_ascii_case("auto")),
         task: cli.task.as_deref(),
         lang: cli.lang.as_deref(),
-        lang_guess: None,
+        lang_guess: cli.lang_guess.as_deref(),
     }
 }
 

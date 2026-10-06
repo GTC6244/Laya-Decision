@@ -73,5 +73,10 @@
     },
     "model": "multilingual",
     "reason": "Latin script but language looks like 'de', not English"
+  },
+  {
+    "input": "jag behöver hjälp med min faktura",
+    "model": "multilingual",
+    "reason": "Latin script but language looks like 'sv', not English"
   }
 ]
