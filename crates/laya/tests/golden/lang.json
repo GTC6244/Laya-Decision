@@ -408,5 +408,85 @@
     "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
+  },
+  {
+    "input": "MON DES EST LA",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "STORES LOS ANGELES LAS VEGAS EL PASO CLOSED",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "WIE SPÄT IST ES IN KÖLN",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.087,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "WIE SPAET IST ES IN KOELN",
+    "script": "latin",
+    "language": null,
+    "is_english": true,
+    "language_undecided": true,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "ПРИВЕТ MON DES EST LA",
+    "script": "latin",
+    "language": "fr",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.3529,
+    "mixed_segment": null
+  },
+  {
+    "input": "sag mir das HEUTIGE DATUM",
+    "script": "latin",
+    "language": "de",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "quiero cancelar mi PEDIDO POR FAVOR",
+    "script": "latin",
+    "language": "es",
+    "is_english": false,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
+  },
+  {
+    "input": "Please refund my order\nMON DES EST LA",
+    "script": "latin",
+    "language": "en",
+    "is_english": true,
+    "language_undecided": false,
+    "diacritic_rate": 0.0,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
   }
 ]

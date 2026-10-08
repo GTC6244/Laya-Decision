@@ -3,6 +3,38 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.6 — tracks upstream Laya 0.3.29 (upstream @e08843b)
+
+Ports the upstream `laya/` changes made after the previous sync (upstream @a4a8921, 0.3.28) that
+affect the Rust surface, up to the 0.3.29 release. Only the language-detection change reaches the
+Rust surface; the rest of the 0.3.28→0.3.29 range is documentation, or lives in modules this port
+does not carry (`train`, `evals`, `calibrate`, `evidence`, `hooks`, `mcp`, `onnx_agent`,
+`tl_kernels`). The unreleased `feat(router)!` default flip to the multilingual checkpoint, made on
+`main` after the 0.3.29 tag and slated for upstream 0.4.0, is deliberately **not** ported: the
+router default stays `english`, as upstream 0.3.29 ships it. The golden parity fixtures were
+regenerated from upstream 0.3.29 and gained all-caps / shouted cases that exercise the new
+behaviour; they are byte-for-byte identical to upstream on every case. Vendored `reference/`
+snapshots synced to upstream @e08843b.
+
+### Changed
+- **All-caps lines are no longer read as foreign prose.** A line of nothing but acronyms and place
+  names — `MON DES EST LA`, `STORES LOS ANGELES LAS VEGAS EL PASO CLOSED` — has no lowercase, so it
+  skipped the acronym-blanking that mixed-case prose gets and was named French or Spanish outright.
+  A *shouted* segment (cased text written entirely in capitals) must now clear a stronger evidence
+  bar before any language is believed: at least one word-length token (≥5 letters) and then either a
+  non-English diacritic or a matched stopword long enough (≥4 letters) to not be an acronym. The bar
+  is applied in three places that previously disagreed — the single-line prose scan
+  (`named_prose_language`), the whole-state verdict (`analyse_text`), and the per-field scan
+  (`leaf_non_english`) — so a state that is *nothing but* an acronym line, or diluted by too few
+  English lines to tip the verdict, is vetoed just as a hidden line is. A shouted line carried by
+  non-English letters (`WIE SPÄT IST ES IN KÖLN`) is still kept foreign; its ASCII spelling
+  (`WIE SPAET IST ES IN KOELN`) has no diacritic and only a three-letter stopword, so it routes
+  English — a documented upper-cased casualty, not a regression. In mixed-case text, acronym-shaped
+  all-caps runs are blanked before the verdict so they do not vote, but emphasis capitals on
+  word-length runs (`sag mir das HEUTIGE DATUM`, `quiero cancelar mi PEDIDO POR FAVOR`) are left
+  alone, so a shouted word never erases its own sentence (upstream `fix/lang-allcaps-acronyms`,
+  commits `9e8c196`, `2ac85c0`).
+
 ## 0.2.5 — tracks upstream Laya 0.3.28 (upstream @a4a8921)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @6d942c9, 0.3.22) that

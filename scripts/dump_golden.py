@@ -74,6 +74,27 @@ LANG_INPUTS = [
     "kan inte logga in",
     "glömt mitt lösenord",
     "min konto kommer ja",
+    # All-caps acronym/address lines are not foreign prose (upstream fix/lang-allcaps-acronyms): a
+    # line of nothing but acronyms and place names has no lowercase, so it skipped the acronym
+    # blanking and was read as prose -- `MON DES EST LA` named French, `STORES ... EL PASO` Spanish.
+    # A shouted line must now show more than acronym-shaped tokens (one word-length token plus a
+    # long matched stopword, or a non-English diacritic) before a language is believed.
+    "MON DES EST LA",
+    "STORES LOS ANGELES LAS VEGAS EL PASO CLOSED",
+    # A shouted line whose umlauts carry it stays German; the ASCII spelling has no diacritic to
+    # fall through to and its only matched stopword is three letters, so it routes English (one of
+    # the documented upper-cased casualties).
+    "WIE SPÄT IST ES IN KÖLN",
+    "WIE SPAET IST ES IN KOELN",
+    # Cyrillic plus a disbelieved shouted Latin tail is not English.
+    "ПРИВЕТ MON DES EST LA",
+    # Mixed case: emphasis capitals on the words that name the language are NOT blanked (a run of
+    # `_SHOUTED_MIN_WORD` letters is a word, not an acronym), so the language survives.
+    "sag mir das HEUTIGE DATUM",
+    "quiero cancelar mi PEDIDO POR FAVOR",
+    # Mixed case: one English line above an all-caps acronym line now reads English overall, since
+    # the acronyms no longer vote in the whole-state verdict.
+    "Please refund my order\nMON DES EST LA",
 ]
 
 EMAIL_INPUTS = [
@@ -124,6 +145,11 @@ ROUTER_INPUTS = [
      "z_customer": "Mein Konto wurde zweimal belastet und ich brauche dringend Hilfe"},
     # Swedish routes to the multilingual checkpoint now that `lang` names it (upstream Swedish).
     "jag behöver hjälp med min faktura",
+    # An all-caps acronym/address line is not foreign prose, so it no longer routes multilingual on
+    # its own (upstream fix/lang-allcaps-acronyms).
+    "MON DES EST LA",
+    # A shouted line carried by its umlauts still routes multilingual.
+    "WIE SPÄT IST ES IN KÖLN",
 ]
 
 
