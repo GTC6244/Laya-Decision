@@ -78,5 +78,15 @@
     "input": "jag behöver hjälp med min faktura",
     "model": "multilingual",
     "reason": "Latin script but language looks like 'sv', not English"
+  },
+  {
+    "input": "MON DES EST LA",
+    "model": "english",
+    "reason": "Latin script, language not identified and no non-English letters; using default (english)"
+  },
+  {
+    "input": "WIE SPÄT IST ES IN KÖLN",
+    "model": "multilingual",
+    "reason": "Latin script, language not identified but 9% non-English letters; not safe for the English checkpoint"
   }
 ]

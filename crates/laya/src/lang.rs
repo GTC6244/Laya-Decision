@@ -963,11 +963,53 @@ fn is_all_upper(s: &str) -> bool {
     has_cased
 }
 
+/// Whether the non-Latin letters of a Latin-plurality text are enough to carry the state.
+/// Mirrors `_non_latin_carries` in `laya/lang.py`.
+fn non_latin_carries(non_latin: f64, n_non_latin: i64) -> bool {
+    non_latin >= NON_LATIN_FRACTION
+        || (non_latin >= NON_LATIN_MIN_FRACTION && n_non_latin >= NON_LATIN_MIN_LETTERS)
+}
+
+// The minimum matched-stopword length for an all-caps line's evidence to count as more than
+// acronym-shaped, and the minimum token length at which a run is a word rather than an acronym.
+// Three corpora decide these two numbers upstream; see `_SHOUTED_MIN_STOPWORD` / `_SHOUTED_MIN_WORD`
+// in `laya/lang.py`.
+const SHOUTED_MIN_STOPWORD: usize = 4;
+const SHOUTED_MIN_WORD: usize = 5;
+
+/// True for a *cased* segment written entirely in capitals: at least one uppercase character and
+/// no lowercase one. A caseless script (Devanagari, CJK) has no lowercase either, so the `isupper`
+/// half keeps it off the caps bar. Mirrors `_shouted` in `laya/lang.py`.
+fn is_shouted(text: &str) -> bool {
+    text.chars().any(|c| c.is_uppercase()) && !text.chars().any(|c| c.is_lowercase())
+}
+
+/// Whether an all-caps line's evidence for `lang` is more than acronym-shaped tokens: it needs one
+/// word-length token, and then either non-English diacritics or a matched stopword long enough to
+/// not be an acronym. Mirrors `_shouted_evidence` in `laya/lang.py`.
+fn shouted_evidence(tokens: &[&str], lang: &str, diacritic_rate: f64) -> bool {
+    if !tokens.iter().any(|t| t.chars().count() >= SHOUTED_MIN_WORD) {
+        return false;
+    }
+    if diacritic_rate >= NON_EN_DIACRITIC_RATE {
+        return true;
+    }
+    let Some(sw) = stop().get(lang) else {
+        return false;
+    };
+    tokens.iter().any(|t| {
+        let lw = t.to_lowercase();
+        lw.chars().count() >= SHOUTED_MIN_STOPWORD && sw.contains(lw.as_str())
+    })
+}
+
 /// Language code for one non-code line, or `None` when it does not name a foreign language.
 ///
 /// Same evidence bar as [`non_english_segment`]: at least four words, a language named by
 /// [`latin_profile`], and two *different* words of that language. Acronyms and slash compounds are
-/// not words. Mirrors `_named_prose_language` in `laya/lang.py`.
+/// not words. A segment in all capitals keeps its acronym-shaped tokens — shouting is not a foreign
+/// language — so it must also clear [`shouted_evidence`]. Mirrors `_named_prose_language` in
+/// `laya/lang.py`.
 fn named_prose_language(segment: &str) -> Option<String> {
     if segment.trim().is_empty() || code_line_re().is_match(segment) {
         return None;
@@ -978,7 +1020,8 @@ fn named_prose_language(segment: &str) -> Option<String> {
         .filter(|tok| !joined.is_match(tok))
         .collect::<Vec<_>>()
         .join(" ");
-    let prose = if prose.chars().any(|c| c.is_lowercase()) {
+    let shouted = is_shouted(&prose);
+    let prose = if !shouted {
         letter_run_re()
             .replace_all(&prose, |caps: &regex::Captures| {
                 let m = &caps[0];
@@ -996,10 +1039,14 @@ fn named_prose_language(segment: &str) -> Option<String> {
     if tokens.len() < 4 {
         return None;
     }
-    let lang = match latin_profile(&prose).language {
-        Some(l) if l != "en" => l,
+    let prof = latin_profile(&prose);
+    let lang = match prof.language {
+        Some(ref l) if l != "en" => l.clone(),
         _ => return None,
     };
+    if shouted && !shouted_evidence(&tokens, &lang, prof.diacritic_rate) {
+        return None;
+    }
     let sw = stop().get(lang.as_str())?;
     let lowered: HashSet<String> = tokens.iter().map(|w| w.to_lowercase()).collect();
     if lowered.iter().filter(|w| sw.contains(w.as_str())).count() < 2 {
@@ -1067,8 +1114,7 @@ fn analyse_text(text: &str) -> Analysis {
 
     if script == "latin"
         && !non_latin_words(text).is_empty()
-        && (non_latin >= NON_LATIN_FRACTION
-            || (non_latin >= NON_LATIN_MIN_FRACTION && n_non_latin >= NON_LATIN_MIN_LETTERS))
+        && non_latin_carries(non_latin, n_non_latin)
     {
         // reclassify to the dominant non-latin script (first max on a tie, insertion order)
         let mut best: Option<&str> = None;
@@ -1113,7 +1159,50 @@ fn analyse_text(text: &str) -> Analysis {
     }
 
     let prof_lat = latin_profile(text);
-    let lang = prof_lat.language.clone();
+    let mut lang = prof_lat.language.clone();
+    // The acronym bar belongs here too, not only in the segment scan. A state that is nothing but
+    // an acronym line — or one diluted by fewer English lines than it takes to tip the verdict —
+    // never reached the segment scan and was named foreign outright (`MON DES EST LA` routed
+    // multilingual on its own). Vetoing here leaves the text undecided, so `looks_non_english`
+    // still decides it. Neither bar applies when the state is carried by a caseless script. See
+    // `_analyse_text` in `laya/lang.py`.
+    if matches!(lang.as_deref(), Some(l) if l != "en") && !non_latin_carries(non_latin, n_non_latin)
+    {
+        if is_shouted(text) {
+            let tokens: Vec<&str> = word_re().find_iter(text).map(|m| m.as_str()).collect();
+            let ok = {
+                let l = lang.as_deref().unwrap();
+                shouted_evidence(&tokens, l, prof_lat.diacritic_rate)
+            };
+            if !ok {
+                lang = None;
+            }
+        } else {
+            // Mixed-case text: re-take the verdict without the all-caps runs, so acronyms do not
+            // vote. Only acronym-shaped runs are blanked — a run of `SHOUTED_MIN_WORD` letters is a
+            // word, and a word is not blanked out of its own sentence (emphasis capitals, and
+            // monotonicity). `looks_non_english` and `diacritic_rate` stay measured on the original.
+            let blank_run = |caps: &regex::Captures| {
+                let m = &caps[0];
+                if is_all_upper(m) {
+                    " ".to_string()
+                } else {
+                    m.to_string()
+                }
+            };
+            let caps: Vec<&str> = letter_run_re()
+                .find_iter(text)
+                .map(|m| m.as_str())
+                .filter(|m| is_all_upper(m))
+                .collect();
+            if !caps.is_empty() && !caps.iter().any(|c| c.chars().count() >= SHOUTED_MIN_WORD) {
+                let blanked = letter_run_re().replace_all(text, blank_run);
+                if blanked.as_ref() != text {
+                    lang = latin_profile(blanked.as_ref()).language;
+                }
+            }
+        }
+    }
     let undecided = lang.is_none();
     let english = lang.as_deref() == Some("en") || (undecided && !prof_lat.looks_non_english);
     Analysis {
@@ -1156,20 +1245,24 @@ fn leaf_non_english(leaf: &str) -> Option<Analysis> {
         if det.is_english {
             continue;
         }
-        if matches!(det.language.as_deref(), Some(l) if l != "en") {
-            if named_prose_language(&sample).is_none() {
+        // A named language still has to survive `named_prose_language` (acronyms and slash
+        // compounds are not words), but a veto is not a verdict of English: a language named and
+        // then disbelieved falls through to the diacritic branch, the same evidential position as
+        // one never named, so its non-English letters can still carry it. That is also why
+        // `language_undecided` is no longer required below. Mirrors `_leaf_non_english`.
+        let named = matches!(det.language.as_deref(), Some(l) if l != "en")
+            && named_prose_language(&sample).is_some();
+        if !named {
+            if det.script != "latin" && det.script != "unknown" {
+                let n_alpha = sample.chars().filter(|c| c.is_alphabetic()).count() as i64;
+                if non_latin_words(&sample).is_empty() || n_alpha < NON_LATIN_MIN_LETTERS {
+                    continue;
+                }
+            } else if !(det.diacritic_rate >= NON_EN_DIACRITIC_RATE
+                && word_re().find_iter(&sample).count() >= 4)
+            {
                 continue;
             }
-        } else if det.script != "latin" && det.script != "unknown" {
-            let n_alpha = sample.chars().filter(|c| c.is_alphabetic()).count() as i64;
-            if non_latin_words(&sample).is_empty() || n_alpha < NON_LATIN_MIN_LETTERS {
-                continue;
-            }
-        } else if !(det.language_undecided
-            && det.diacritic_rate >= NON_EN_DIACRITIC_RATE
-            && word_re().find_iter(&sample).count() >= 4)
-        {
-            continue;
         }
         let n_alpha = sample.chars().filter(|c| c.is_alphabetic()).count() as i64;
         if n_alpha > best_n {
@@ -1322,6 +1415,53 @@ mod tests {
         let a = analyse(&s("acme.com foo.com bar.com test.com"));
         assert_eq!(a.language, None);
         assert!(a.is_english);
+    }
+
+    #[test]
+    fn all_caps_acronym_line_is_not_foreign_prose() {
+        // A line of nothing but acronyms and place names is shouted, not foreign prose (upstream
+        // fix/lang-allcaps-acronyms): no long matched stopword and no non-English diacritic, so it
+        // shows no more than acronym-shaped evidence and stays English.
+        let a = analyse(&s("MON DES EST LA"));
+        assert_eq!(a.language, None);
+        assert!(a.is_english);
+        let a = analyse(&s("STORES LOS ANGELES LAS VEGAS EL PASO CLOSED"));
+        assert_eq!(a.language, None);
+        assert!(a.is_english);
+    }
+
+    #[test]
+    fn shouted_line_with_diacritics_is_kept_foreign() {
+        // A shouted line carried by non-English letters still leaves the English checkpoint.
+        assert!(!analyse(&s("WIE SPÄT IST ES IN KÖLN")).is_english);
+        // The ASCII spelling has no diacritic to fall through to and only a three-letter matched
+        // stopword, so it routes English — a documented upper-cased casualty, not a regression.
+        assert!(is_english(&s("WIE SPAET IST ES IN KOELN")));
+    }
+
+    #[test]
+    fn emphasis_capitals_do_not_erase_the_language() {
+        // A caps run of `SHOUTED_MIN_WORD` letters is a word, not an acronym, so it is not blanked
+        // out of its own mixed-case sentence; the shouted words still name the language.
+        assert_eq!(
+            analyse(&s("sag mir das HEUTIGE DATUM")).language.as_deref(),
+            Some("de")
+        );
+        assert_eq!(
+            analyse(&s("quiero cancelar mi PEDIDO POR FAVOR"))
+                .language
+                .as_deref(),
+            Some("es")
+        );
+    }
+
+    #[test]
+    fn english_line_above_acronym_line_reads_english() {
+        // The all-caps acronyms no longer vote in the whole-state verdict, so one English line
+        // above an acronym line carries the state (the segment scan vetoes the acronym line).
+        let a = analyse(&s("Please refund my order\nMON DES EST LA"));
+        assert!(a.is_english);
+        assert_eq!(a.language.as_deref(), Some("en"));
     }
 
     #[test]
