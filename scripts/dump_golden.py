@@ -175,7 +175,11 @@ def dump_email():
 
 
 def dump_router():
-    r = Router()
+    # The Rust port keeps `default="english"`, the value upstream shipped through 0.3.29.
+    # Upstream flipped the stock default to `multilingual` in 0.4.0 (feat(router)!), a breaking
+    # change this port deliberately does not adopt, so pin english here to match the port's
+    # behaviour and keep these fixtures stable across the upstream default flip.
+    r = Router(default="english")
     rows = []
     for state in ROUTER_INPUTS:
         d = r.route(state, {})

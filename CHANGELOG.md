@@ -3,6 +3,36 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.7 — tracks upstream Laya 0.4.1 (upstream @1adc59f)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @e08843b, 0.3.29)
+across the 0.4.0 and 0.4.1 releases. **Nothing in this range reaches the Rust pure-logic surface
+as a portable change.** The whole 166-commit span is documentation, tooling, language bindings
+(`laya-ts`, `laya-java`, `laya-dotnet`), or lives in modules this port does not carry (`train`,
+`evals`, `calibrate`, `evidence`, `hooks`, `mcp`, `onnx_agent`, `tl_kernels`, `backends`, `serve`).
+Of the three carried Python modules that changed, two are non-behavioural — a `clamp_temperature`
+docstring expansion in `common.py`, and a `**kwargs` plumbing refactor in `structured.decide_batch`
+(`predict_batch` routing pins) that has no analogue on the Rust surface, where `Agent::predict_batch`
+is checkpoint-level and takes typed parameters, not keyword overrides.
+
+The one behavioural change — the `feat(router)!` flip of the stock router default from `english` to
+`multilingual`, shipped in upstream 0.4.0 — is **deliberately not ported**, exactly as flagged in the
+0.2.6 notes when it was still unreleased. It is a breaking change (upstream marks it `!`), so adopting
+it is out of scope for a patch release; the router default stays `english`. Detected non-Latin script
+still routes to `multilingual` regardless of the default, so only language-undecided, letterless, or
+no-non-English-letter text is affected. A deployment that wants the upstream behaviour constructs
+the router with `RouterOptions { default: "multilingual".into(), ..Default::default() }`.
+
+The golden parity fixtures were regenerated from upstream 0.4.1 and are **byte-for-byte identical** to
+0.2.6: `lang` and `email` because those modules are unchanged, and `router` because `dump_golden.py`
+now pins `Router(default="english")` to match the port across the upstream default flip. This
+confirms the pure-logic surface (language detection, routing, email cleaning) did not move between
+0.3.29 and 0.4.1. Vendored `reference/` snapshots synced to upstream @1adc59f.
+
+### Changed
+- `scripts/dump_golden.py` pins `Router(default="english")` when dumping the router fixture, so the
+  fixture tracks the port's retained `english` default rather than upstream's new `multilingual` one.
+
 ## 0.2.6 — tracks upstream Laya 0.3.29 (upstream @e08843b)
 
 Ports the upstream `laya/` changes made after the previous sync (upstream @a4a8921, 0.3.28) that
