@@ -3,6 +3,51 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.8 — tracks upstream Laya 0.4.2 (upstream @6880462)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @1adc59f, 0.4.1) up to
+the 0.4.2 release. The 39-commit span is mostly the language bindings (`laya-java`, `laya-dotnet`,
+`laya-ts`), `compose` / `evals` / `docs` / `ci` work, and modules this port does not carry (`train`,
+`evals`, `_agreement`, `calibrate`, `evidence`, `backends`). Two changes reach the carried surface
+and are ported; one is a registration-time diagnostic with no analogue on the Rust surface and is
+deliberately skipped (detailed below).
+
+### Added
+- **`x_jev_confidence` on the server's choice and score answers.** In the non-strict wire path,
+  `laya-serve` now reports, beside Laya's own `confidence`, the number Jev's own formula gives for
+  the same probabilities — `(max(p) - 1/n) / (1 - 1/n)` for a choice, and a mode-spread ratio
+  `max(0, 1 - Σ pᵢ·|i − mode| / D)` for a score — so a client porting a threshold from Jev reads a
+  comparable value rather than Laya's normalized entropy, which selects about twice as much at the
+  same cutoff. The `x_` prefix keeps it clear of any field the Jev contract may add later; a noul
+  answer, or probabilities that give no usable number (missing, empty, non-numeric, boolean,
+  non-finite, or a non-integer score level), carries no field rather than a guess; and strict mode
+  (`LAYA_JEV_STRICT`) still serves only the contracted keys. The formula lives in the library as
+  `common::jev_confidence` (upstream #302, `feat(serve)` `c932543`; upstream
+  `laya/confidence.py::jev_confidence`).
+
+### Fixed
+- **A shortlisted or tournament-narrowed choice no longer carries a stale `option_order`.** An
+  `option_order` holds one slot per option, so an order sized for the caller's full label set no
+  longer fits once `predict_shortlist` or `predict_tournament` cuts the criteria, and the agent
+  rejected the question outright (`'option_order' must be a permutation of range(k)`). The narrowed
+  copy now drops the order — with a one-shot stderr notice naming the question — because remapping it
+  onto the kept labels would silently move options between slots. A passthrough choice (nothing was
+  dropped) and non-choice questions keep their order, and the caller's own question dict is never
+  mutated (upstream #958, `fix(shortlist)` `f707d29`).
+
+The one behavioural change left unported is the **router's "name is one edit from a built-in"
+warning** (upstream `feat(router)` `d728d6f`): it fires only when *registering a custom checkpoint
+name*, and the Rust `Router` has no register/attach path — its model map is fixed from the built-in
+defaults (or the standalone repos) at construction — so there is no code site the edit-distance
+check could guard. Its sibling `test(router): document and verify explicit port defaults` is a
+tests-only change over behaviour the port already matches.
+
+The golden parity fixtures were regenerated from upstream 0.4.2 and are **byte-for-byte identical**
+to 0.2.7: language detection, routing, and email cleaning did not move between 0.4.1 and 0.4.2 (the
+router change is a registration-time diagnostic that `Router.route` never reaches). Vendored
+`reference/` snapshots synced to upstream @6880462, and `UPSTREAM_VERSION` now reads `0.4.2` (it had
+drifted from the tracked release).
+
 ## 0.2.7 — tracks upstream Laya 0.4.1 (upstream @1adc59f)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @e08843b, 0.3.29)

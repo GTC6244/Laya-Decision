@@ -128,6 +128,39 @@ fn project_jev_strict(result: Value) -> Value {
     })
 }
 
+/// Add `x_jev_confidence` to every `choice` and `score` answer: the `confidence` Jev's own formula
+/// gives for the same probabilities (upstream #302, served in the non-strict path only).
+///
+/// Laya's `confidence` is normalized entropy and keeps that meaning; a client porting a threshold
+/// from Jev reads `x_jev_confidence` instead. The `x_` prefix keeps it clear of any field Jev may
+/// add later. An answer whose probabilities give no usable number is left without the field rather
+/// than given a guess, and the result is rebuilt rather than mutated in place. Mirrors upstream
+/// `serve._add_jev_confidence`, using the library's [`laya::common::jev_confidence`].
+fn add_jev_confidence(result: Value) -> Value {
+    let Some(obj) = result.as_object() else {
+        return result;
+    };
+    let Some(Value::Object(ans)) = obj.get("answers") else {
+        return result;
+    };
+    let mut answers = serde_json::Map::with_capacity(ans.len());
+    for (qid, answer) in ans {
+        let mut projected = answer.clone();
+        if let Some(conf) = laya::common::jev_confidence(answer) {
+            if let Some(map) = projected.as_object_mut() {
+                map.insert(
+                    "x_jev_confidence".to_string(),
+                    json!(laya::common::round4(conf)),
+                );
+            }
+        }
+        answers.insert(qid.clone(), projected);
+    }
+    let mut out = obj.clone();
+    out.insert("answers".to_string(), Value::Object(answers));
+    Value::Object(out)
+}
+
 /// Positive integer from an env var, or `default` when unset, empty or unparseable.
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -536,7 +569,7 @@ async fn systemone(
             let v = if app.jev_strict {
                 project_jev_strict(v)
             } else {
-                v
+                add_jev_confidence(v)
             };
             // Expose the inference time the same way upstream `laya-serve` does, so a client can
             // read it without a separate timing endpoint.
@@ -685,5 +718,27 @@ mod tests {
         let q2 = &strict["answers"]["q2"];
         // noul keeps only type + noul.
         assert_eq!(q2, &json!({"type": "noul", "noul": 0.7}));
+    }
+
+    #[test]
+    fn add_jev_confidence_annotates_choice_and_score_only() {
+        let full = json!({
+            "model": "english",
+            "answers": {
+                // choice: (max - 1/3) / (1 - 1/3) over 0.9519 / 0.0327 / 0.0154 -> 0.9278
+                "queue": {"type": "choice", "choice": "billing", "confidence": 0.797,
+                          "probabilities": {"billing": 0.9519, "tech": 0.0327, "other": 0.0154}},
+                // score: 3 levels, mode 1, uniform D = 2/3, spread 0.35 -> 1 - 0.35/(2/3) = 0.475
+                "urgency": {"type": "score", "score": 1.0, "confidence": 0.1925,
+                            "probabilities": {"0": 0.2, "1": 0.65, "2": 0.15}},
+                "threat": {"type": "noul", "noul": 0.2, "confidence": 0.6},
+            },
+        });
+        let out = add_jev_confidence(full);
+        assert_eq!(out["answers"]["queue"]["x_jev_confidence"], json!(0.9278));
+        assert_eq!(out["answers"]["urgency"]["x_jev_confidence"], json!(0.475));
+        // Laya's own numbers are untouched, and a noul answer gets no Jev confidence.
+        assert_eq!(out["answers"]["queue"]["confidence"], json!(0.797));
+        assert!(out["answers"]["threat"].get("x_jev_confidence").is_none());
     }
 }

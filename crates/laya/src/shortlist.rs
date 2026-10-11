@@ -92,6 +92,7 @@ where
     let checked = check_k(k)?;
     let mut reduced: Questions = Questions::new();
     let mut meta = Map::new();
+    let mut warned: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (qid, qdef) in questions {
         let is_choice = qdef.get("type").and_then(|v| v.as_str()) == Some("choice");
@@ -124,6 +125,8 @@ where
         }
         let mut updated = qdef.clone();
         updated["criteria"] = subset_criteria(criteria, &labels);
+        // A narrowed choice can no longer honour an order sized for the caller's labels; drop it.
+        crate::common::drop_stale_option_order(qid, &mut updated, labels.len(), &mut warned);
         reduced.insert(qid.clone(), updated);
     }
 
@@ -192,10 +195,20 @@ pub fn predict_tournament(
         }
     }
 
+    // A choice that goes through a round holds fewer labels than the caller's, so an
+    // `option_order` sized for them no longer fits; drop it once per question (upstream #958).
+    let warned: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     let cut = |qid: &str, labels: &[String]| -> Value {
         let qdef = &questions[qid];
         let mut updated = qdef.clone();
         updated["criteria"] = subset_criteria(qdef.get("criteria").unwrap(), labels);
+        crate::common::drop_stale_option_order(
+            qid,
+            &mut updated,
+            labels.len(),
+            &mut warned.borrow_mut(),
+        );
         updated
     };
 
