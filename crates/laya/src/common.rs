@@ -394,6 +394,111 @@ pub fn confidence_from_probs(p: &[f64], k: usize) -> f64 {
     (1.0 - ent / (k as f64).ln()).clamp(0.0, 1.0)
 }
 
+/// Jev's `confidence` for a `choice`/`score` answer's `probabilities`, or `None` (upstream #302).
+///
+/// Laya's own `confidence` is normalized entropy ([`confidence_from_probs`]); Jev's is a different
+/// formula, so a threshold carried over from Jev selects about twice as much on Laya. These are
+/// TypeSafe's own formulas (`system-one-adapter-python`, `_utils/confidence_metrics.py`), mirrored
+/// from upstream `laya/confidence.py::jev_confidence`:
+///
+/// - `choice`: `(max(p) - 1/n) / (1 - 1/n)`
+/// - `score`: `max(0, 1 - sum(p_i * |i - mode|) / D)`, `D` the same sum for a uniform distribution
+///
+/// Both are `1.0` for a single option, and a zero total is read as uniform. A `noul` answer has no
+/// Jev confidence, and malformed probabilities (missing, empty, non-numeric, boolean, non-finite,
+/// or — for `score` — a non-integer level key) give `None` rather than a guess, so a caller
+/// filtering on this number never filters on a made-up one.
+pub fn jev_confidence(answer: &Value) -> Option<f64> {
+    let kind = answer.get("type").and_then(|v| v.as_str())?;
+    let probs = answer.get("probabilities").and_then(|v| v.as_object())?;
+    if probs.is_empty() || !matches!(kind, "choice" | "score") {
+        return None;
+    }
+    // Reject a boolean before reading it as a number: Python drops `isinstance(v, bool)` even
+    // though `float(True)` would succeed, so a bool probability yields no confidence.
+    if probs.values().any(|v| v.is_boolean()) {
+        return None;
+    }
+    let p: Vec<f64> = if kind == "score" {
+        // Levels are read in numeric order, not string order ("10" sorts before "2" as text); a
+        // non-integer key is refused, matching Python's `sorted(probabilities, key=int)`.
+        let mut keyed: Vec<(i64, f64)> = Vec::with_capacity(probs.len());
+        for (key, value) in probs {
+            let idx = key.parse::<i64>().ok()?;
+            keyed.push((idx, value.as_f64()?));
+        }
+        keyed.sort_by_key(|&(idx, _)| idx);
+        keyed.into_iter().map(|(_, v)| v).collect()
+    } else {
+        probs.values().map(|v| v.as_f64()).collect::<Option<_>>()?
+    };
+    if !p.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let n = p.len();
+    if n == 1 {
+        return Some(1.0);
+    }
+    let total: f64 = p.iter().sum();
+    let p: Vec<f64> = if total != 0.0 {
+        p.iter().map(|&v| v / total).collect()
+    } else {
+        vec![1.0 / n as f64; n]
+    };
+    if kind == "choice" {
+        let max = p.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        return Some((max - 1.0 / n as f64) / (1.0 - 1.0 / n as f64));
+    }
+    // score: distance of the distribution from its mode, scaled by a uniform distribution's.
+    let mode = (0..n)
+        .max_by(|&a, &b| p[a].partial_cmp(&p[b]).unwrap())
+        .unwrap();
+    let spread: f64 = p
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| v * (i as f64 - mode as f64).abs())
+        .sum();
+    let center = (n as f64 - 1.0) / 2.0;
+    let uniform_spread: f64 = (0..n).map(|i| (i as f64 - center).abs()).sum::<f64>() / n as f64;
+    Some((1.0 - spread / uniform_spread).max(0.0))
+}
+
+/// Remove an `option_order` a narrowed choice question can no longer honour, warning once per
+/// `qid`. Returns `true` if an order was dropped. Mirrors upstream `shortlist._drop_stale_order`.
+///
+/// `option_order` holds one slot per option, so an order that fit the caller's label set does not
+/// fit a narrowed one and the agent refuses the question. Remapping the order onto the kept labels
+/// would silently move options between slots, so it is dropped instead, once per question per call.
+/// Rust has no `warnings` module, so the one-shot notice goes to stderr like the crate's other
+/// diagnostics (`agent.rs`); `warned` tracks which questions have already been reported.
+pub fn drop_stale_option_order(
+    qid: &str,
+    question: &mut Value,
+    n_options: usize,
+    warned: &mut std::collections::HashSet<String>,
+) -> bool {
+    let order = match question
+        .as_object_mut()
+        .and_then(|m| m.remove("option_order"))
+    {
+        Some(o) => o,
+        None => return false,
+    };
+    if warned.insert(qid.to_string()) {
+        let had = match &order {
+            Value::Array(a) => format!("{} slots", a.len()),
+            other => py_json(other),
+        };
+        eprintln!(
+            "laya.shortlist: question {:?}: 'option_order' ({}) was dropped because the label set \
+             was narrowed to {}; the order no longer fits the kept options and remapping it onto \
+             them would move options between slots.",
+            qid, had, n_options
+        );
+    }
+    true
+}
+
 pub const TEMP_MIN: f64 = 0.5;
 pub const TEMP_MAX: f64 = 5.0;
 
@@ -681,5 +786,110 @@ mod tests {
         // (id 103) and slot 2 shows aa (id 102), so the two ends differ.
         assert_eq!(ids[markers[0] + 1], 103);
         assert_eq!(ids[markers[2] + 1], 102);
+    }
+
+    fn choice_answer(p: &[f64]) -> Value {
+        let probs: serde_json::Map<String, Value> = p
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (format!("o{i}"), json!(v)))
+            .collect();
+        json!({ "type": "choice", "probabilities": probs })
+    }
+
+    fn score_answer(p: &[f64]) -> Value {
+        let probs: serde_json::Map<String, Value> = p
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (i.to_string(), json!(v)))
+            .collect();
+        json!({ "type": "score", "probabilities": probs })
+    }
+
+    #[test]
+    fn jev_confidence_matches_typesafe_vectors() {
+        // Vectors from upstream tests/test_confidence.py (TypeSafe's own + the jevcompat spec).
+        let cases: &[(Value, f64)] = &[
+            (choice_answer(&[0.5, 0.5]), 0.0),
+            (choice_answer(&[0.2, 0.2]), 0.0), // unnormalized but uniform -> 0
+            (choice_answer(&[0.0, 0.0]), 0.0), // zero total read as uniform
+            (choice_answer(&[0.82, 0.18]), 0.64),
+            (choice_answer(&[1.0]), 1.0),
+            (choice_answer(&[0.88, 0.12]), 0.76),
+            (score_answer(&[0.2, 0.2, 0.2, 0.2, 0.2]), 0.0),
+            (score_answer(&[0.04, 0.04, 0.04, 0.04, 0.04]), 0.0),
+            (score_answer(&[0.01, 0.02, 0.07, 0.3, 0.6]), 0.55),
+            (score_answer(&[1.0]), 1.0),
+            (score_answer(&[0.0, 0.95, 0.05]), 0.925),
+        ];
+        for (answer, want) in cases {
+            let got = jev_confidence(answer).expect("a usable confidence");
+            assert!(
+                (got - want).abs() < 1e-9,
+                "answer {answer:?}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn jev_confidence_reads_score_levels_in_numeric_order() {
+        // "10" sorts before "2" as text; the mode must still be level 10.
+        let mut probs = serde_json::Map::new();
+        for i in 0..=10 {
+            probs.insert(i.to_string(), json!(0.0));
+        }
+        probs.insert("10".to_string(), json!(1.0));
+        let answer = json!({ "type": "score", "probabilities": probs });
+        assert_eq!(jev_confidence(&answer), Some(1.0));
+    }
+
+    #[test]
+    fn jev_confidence_differs_from_entropy() {
+        // The same distribution #302 measured apart: Jev 0.6, entropy below 0.35.
+        let p = [0.7, 0.1, 0.1, 0.1];
+        let jev = jev_confidence(&choice_answer(&p)).unwrap();
+        assert!((jev - 0.6).abs() < 1e-9, "jev {jev}");
+        assert!(confidence_from_probs(&p, 4) < 0.35);
+    }
+
+    #[test]
+    fn jev_confidence_none_for_unusable_answers() {
+        let none_cases = [
+            json!({ "type": "noul", "noul": 0.9 }),
+            json!({ "type": "weird", "probabilities": { "a": 1.0 } }),
+            json!({ "type": "choice" }),
+            json!({ "type": "choice", "probabilities": {} }),
+            json!({ "type": "choice", "probabilities": { "o0": 0.5, "o1": "high" } }),
+            json!({ "type": "choice", "probabilities": { "o0": true, "o1": false } }),
+            json!({ "type": "score", "probabilities": { "low": 0.5, "high": 0.5 } }),
+        ];
+        for answer in none_cases {
+            assert_eq!(jev_confidence(&answer), None, "answer {answer:?}");
+        }
+    }
+
+    #[test]
+    fn drop_stale_option_order_drops_and_dedupes() {
+        use std::collections::HashSet;
+        let mut warned = HashSet::new();
+        let mut q =
+            json!({ "type": "choice", "criteria": ["a", "b"], "option_order": [3, 2, 1, 0] });
+        assert!(drop_stale_option_order("intent", &mut q, 2, &mut warned));
+        assert!(q.get("option_order").is_none(), "stale order removed");
+        assert_eq!(
+            q.get("criteria"),
+            Some(&json!(["a", "b"])),
+            "criteria untouched"
+        );
+        assert!(warned.contains("intent"));
+        // A question with no order is left alone and reports nothing.
+        let mut plain = json!({ "type": "choice", "criteria": ["a", "b"] });
+        assert!(!drop_stale_option_order(
+            "intent",
+            &mut plain,
+            2,
+            &mut warned
+        ));
+        assert_eq!(warned.len(), 1, "no new warning for an order-free question");
     }
 }
