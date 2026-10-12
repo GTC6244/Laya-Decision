@@ -197,10 +197,7 @@ fn tournament_targets(
                 for el in a {
                     // A non-string label cannot key an eliminated-option probability; the whole
                     // request falls back to the one-pass path, as upstream's `all(isinstance str)`.
-                    match el.as_str() {
-                        Some(s) => labels.push(s.to_string()),
-                        None => return None,
-                    }
+                    labels.push(el.as_str()?.to_string());
                 }
                 labels
             }
