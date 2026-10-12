@@ -35,7 +35,7 @@ from .presets import (
 from .router import DEFAULT_MODELS, RouteDecision, Router
 from .structured import DecisionResult, decide, decide_batch
 
-__version__ = "0.4.2"
+__version__ = "0.4.4"
 
 # Routing, language detection and email cleaning are pure Python. The torch-backed names are
 # resolved lazily so that `import laya` -- and therefore `from laya import Router` or
@@ -63,6 +63,7 @@ _LAZY_ATTRS = {
     "flag_low_confidence": (".confidence", "flag_low_confidence"),
     "apply_confidence_gate": (".confidence", "apply_confidence_gate"),
     "GATE_STATES": (".confidence", "GATE_STATES"),
+    "jev_confidence": (".confidence", "jev_confidence"),
     "render_options": (".common", "render_options"),
     "QTYPES": (".common", "QTYPES"),
     "QTYPE_NAMES": (".common", "QTYPE_NAMES"),
@@ -135,6 +136,7 @@ __all__ = [
     "flag_low_confidence",
     "apply_confidence_gate",
     "GATE_STATES",
+    "jev_confidence",
     "render_options",
     "QTYPES",
     "QTYPE_NAMES",

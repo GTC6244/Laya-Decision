@@ -200,9 +200,9 @@ def resolve_min_confidence(answer: Dict[str, Any], thresholds: Dict[str, float],
 def flag_low_confidence(results: List[Dict[str, Any]], min_confidence: float) -> None:
     """Opt-in abstention marker (#361): flag answers whose confidence falls below `min_confidence`.
 
-    Reads `answer_confidence` (`max(p)`, the quantity the calibration figures describe and the one
-    that does not drift with the number of options), falling back to `confidence` if
-    `answer_confidence` is absent.
+    Reads `answer_confidence` (`max(p)`, the quantity the calibration figures describe -- the
+    *level* it reaches still moves with the option count, which is why `min_confidence` takes a
+    per-bucket map), falling back to `confidence` if `answer_confidence` is absent.
     The raw answer and confidence stay intact; `low_confidence: True` is added when the answer
     falls below the threshold, and removed if a previously-flagged answer now clears it (e.g.
     when a result dict is reused or re-evaluated with a different threshold).
@@ -210,10 +210,12 @@ def flag_low_confidence(results: List[Dict[str, Any]], min_confidence: float) ->
     `min_confidence` is either a float (one threshold for every answer) or a per-bucket mapping
     (#394), in which case each answer is gated at the threshold of its own option-count bucket via
     :func:`resolve_min_confidence`.
+
+    Exactly ``0.0`` runs this same loop rather than short-circuiting out of it. Nothing falls below
+    it, so it marks no answer -- and the pass is what clears a marker an earlier, stricter threshold
+    left on a reused payload, which is the state #910 was filed about.
     """
     is_map = isinstance(min_confidence, dict)
-    if not is_map and min_confidence == 0.0:
-        return
     for res in results:
         answers = res.get("answers") if isinstance(res, dict) else None
         if not isinstance(answers, dict):
@@ -272,10 +274,10 @@ def apply_confidence_gate(results: List[Dict[str, Any]], min_confidence: Optiona
     The flag itself stays :func:`flag_low_confidence`'s -- this delegates rather than
     re-implementing the rule, so the boolean and the reported state cannot drift apart.
 
-    A `min_confidence` of exactly ``0.0`` *was* set, so states are reported, and
-    :func:`flag_low_confidence` treats ``0.0`` as a no-op because nothing can fall below it. Every
-    answer carrying a usable confidence therefore reads ``passed``, and the threshold echo is what
-    distinguishes that from a real pass at a real threshold.
+    A `min_confidence` of exactly ``0.0`` *was* set, so states are reported. Nothing can fall below
+    it, so :func:`flag_low_confidence` marks no answer at it and clears whatever a stricter threshold
+    left on a reused payload. Every answer carrying a usable confidence therefore reads ``passed``,
+    and the threshold echo is what distinguishes that from a real pass at a real threshold.
     """
     if min_confidence is None:
         return
@@ -288,8 +290,6 @@ def apply_confidence_gate(results: List[Dict[str, Any]], min_confidence: Optiona
         for a in answers.values():
             if not isinstance(a, dict):
                 continue
-            if not is_map and min_confidence == 0.0:
-                a.pop("low_confidence", None)
             if a.get("low_confidence"):
                 a["abstention"] = GATE_ABSTAINED
             elif _gate_confidence(a) is None:

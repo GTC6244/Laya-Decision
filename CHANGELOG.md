@@ -3,6 +3,63 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.9 — tracks upstream Laya 0.4.4 (upstream @682ac67)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @6880462, 0.4.2) across
+the 0.4.3 and 0.4.4 releases. The 169-commit span is mostly language bindings (`laya-java`,
+`laya-dotnet`, `laya-ts`, `laya-go`), docs/compose/ci work, and modules this port does not carry
+(`train`, `evals`, `calibrate`, `evidence`, `backends`, `mcp`, `tl_kernels`, `_agreement`). One
+change reaches the carried surface and is ported; the rest have no code site on the Rust surface and
+are listed below.
+
+### Added
+- **`LAYA_TOURNAMENT_GROUP` on `laya-serve`.** `/v1/systemone` can now answer a choice with more
+  options than the group size *by elimination*, in groups of that size, rather than reading every
+  option in one pass — the point past which options no longer each get a token span of their own
+  (upstream #302, `feat(serve)` `c3e631b`, with the one-pass-cap bound from `fix(serve)` `472f098`).
+  When the variable is set (an integer `2..=100`; anything else leaves it off), a choice over the
+  group runs through the library's `predict_tournament`; each answer keeps the Jev shape —
+  `probabilities` names every option in criteria order, the finalists carry the final round's
+  probabilities and an eliminated option carries `0.0`, so `choice` is still the argmax and the
+  values still sum to 1 — and an `x_tournament` entry records the finalists and the round count.
+  `usage.input_tokens` is summed over every forward pass (a new
+  `shortlist::predict_tournament_with_usage` returns that total beside the otherwise-unchanged
+  result); the other usage keys are the final call's. A choice carrying an `option_order`, or an
+  array-criteria choice with a non-string label, keeps the one-pass path, because a narrowed choice
+  cannot carry an order over the full label set and an eliminated-option probability is keyed by a
+  string label (upstream #1062). Setting the variable also raises the HTTP choice-option cap from
+  100 to 255 (`MAX_TOURNAMENT_CHOICE_OPTIONS`), since every choice the raised cap newly admits is
+  always over the group and so always narrowed, never handed to a one-pass read that cannot fit it.
+  Strict mode (`LAYA_JEV_STRICT`) still serves only the contracted keys, so `x_tournament` is
+  dropped there.
+
+### Unported upstream changes
+
+The rest of the carried-surface churn has no landing site on this port and is deliberately skipped:
+
+- **`flag_low_confidence` / `apply_confidence_gate` clearing a stale marker at `min_confidence`
+  `0.0`** (upstream #910, `fix(confidence)` `2863500`): the Rust single-request surface carries no
+  `min_confidence` gate (as `laya-serve`'s predict path already notes), so there is no marker to
+  clear and no loop to run.
+- **`Router.predict_batch`'s `diagnostics` out-parameter and the CLI/serve plumbing around it**
+  (upstream #1111, `a69fa97` / `9f7a6a6`): the Rust `Router` has no `predict_batch`, the CLI has no
+  batch mode, and `laya-serve` exposes no batch endpoint, so the per-group `sort_by_length` report
+  and its HTTP refusal (`BATCH_BODY_OUT_PARAMETERS`) reach no code.
+- **`cli.load_questions` disambiguating a bare `questions` question id from the wrapper object**
+  (upstream `6e5ad07`): the Rust CLI answers presets, not a `--questions` JSON file.
+- **`shortlist.cached_embed_fn` taking the cache lock around its dimensionality guard** (upstream
+  `586366e`): the Rust shortlist takes a caller-supplied `embed_fn` directly and carries no
+  embedding cache to guard.
+- Docstring-only moves in `lang.analyse` (`mixed_segment`), `structured.decide_batch`, and `serve`'s
+  `LAYA_DEFAULT_MODEL` column (upstream's `Router` has defaulted to `multilingual` since 0.4.0; this
+  port's `Router` still defaults to `english`, so the server's env table is already right and is
+  left unchanged).
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.8: language detection, routing,
+and email cleaning did not move between 0.4.2 and 0.4.4 (`lang`'s change is a docstring, `router`'s
+is on `predict_batch`, which `route` never reaches, and `email` did not change at all). Vendored
+`reference/` snapshots synced to upstream @682ac67, and `UPSTREAM_VERSION` now reads `0.4.4`.
+
 ## 0.2.8 — tracks upstream Laya 0.4.2 (upstream @6880462)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @1adc59f, 0.4.1) up to

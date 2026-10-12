@@ -348,7 +348,11 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
     under-abstains depending on the question. This fits one cut per bucket instead, keyed exactly
     like `temperature_by_options` (`common.temp_bucket`, e.g. ``"choice:3-5"``), and the result is a
     `min_confidence` map that :func:`laya.confidence.check_min_confidence` /
-    :func:`laya.confidence.apply_confidence_gate` accept directly.
+    :func:`laya.confidence.apply_confidence_gate` accept directly -- with one exception to keep:
+    every bucket below `min_bucket_n` is omitted, so a calibration set too small to fill a single
+    bucket returns ``{}``, and the validator refuses an empty map ("must be a non-empty dict"). Pass
+    no gate in that case rather than passing what came back; `laya.train` writes the map into a
+    checkpoint only `if abstention_thresholds:`.
 
     `records` are the same `(qtype, logits, target[, k])` tuples `fit_temperature_map` consumes
     (`records_from_labeled` builds them). Confidence is the **calibrated** `max(p)` -- the logits are
@@ -418,8 +422,11 @@ def fit_binning_map(records: Iterable, temperature: Sequence[float],
     `temperature_by_options` first), so a binning map composes on top of a temperature map rather
     than replacing it. Returns `{bucket: {"bins": N, "values": [recalibrated confidence per bin]}}`;
     buckets below `min_bucket_n` are omitted. Apply it with :func:`apply_binning_map`. An empty bin
-    (a confidence range the calibration set never produced) maps to its own midpoint, i.e. leaves
-    that region unchanged, so an unseen value is never recalibrated to a fabricated 0.
+    (a confidence range the calibration set never produced) maps to that bin's centre, a point
+    inside the region the value came from: the value is still rewritten, and moves by at most half a
+    bin width. What the centre buys is that an unseen confidence is never recalibrated to a
+    fabricated 0, not that it passes through -- only a bucket the map has no entry for does that
+    (:func:`apply_binning_map`).
     """
     if bins < 1:
         raise ValueError("bins must be >= 1, got %r" % (bins,))
@@ -651,7 +658,9 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
     temps = payload.get("temperature")
     if not isinstance(temps, (list, tuple)) or len(temps) != N_QTYPES:
         raise ValueError("calibration JSON must contain temperature: [3 floats]")
-    by_options = payload.get("temperature_by_options") or {}
+    by_options = payload.get("temperature_by_options")
+    if by_options is None:   # absent, or an explicit null: a file from before bucket temperatures
+        by_options = {}
     if not isinstance(by_options, dict):
         raise ValueError(
             "calibration JSON temperature_by_options must be an object of bucket -> float, "

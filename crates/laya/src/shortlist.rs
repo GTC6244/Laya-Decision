@@ -165,6 +165,21 @@ pub fn predict_tournament(
     questions: &Questions,
     group_size: usize,
 ) -> Result<Value> {
+    Ok(predict_tournament_with_usage(agent, state, questions, group_size)?.0)
+}
+
+/// Like [`predict_tournament`], but also returns the total `input_tokens` summed over every
+/// forward pass it ran — each elimination round plus the final answer. The returned [`Value`] is
+/// byte-identical to [`predict_tournament`]'s (its `usage` is still the final call's); the extra
+/// number is for a caller that reports the whole operation's token cost. `laya-serve` uses it to
+/// fill `usage.input_tokens` when answering a large choice by elimination (upstream
+/// `serve._predict_with_tournament`, which sums `input_tokens` over every recorded call).
+pub fn predict_tournament_with_usage(
+    agent: &Agent,
+    state: &Value,
+    questions: &Questions,
+    group_size: usize,
+) -> Result<(Value, usize)> {
     if group_size < 2 {
         return Err(LayaError::InvalidQuestion(format!(
             "group_size must be an integer of at least 2, got {}",
@@ -212,6 +227,10 @@ pub fn predict_tournament(
         updated
     };
 
+    // Summed over every `system_one` call below (each round and the final), the token cost of the
+    // whole elimination, for a caller that reports it (upstream sums each recorded call's usage).
+    let mut total_input_tokens: usize = 0;
+
     loop {
         // Each element: (meta index, this group's labels), in group order across all questions.
         let mut groups: Vec<(usize, Vec<String>)> = Vec::new();
@@ -234,7 +253,9 @@ pub fn predict_tournament(
             let qid = meta[*idx].0.clone();
             round_qs.insert(i.to_string(), cut(&qid, labels));
         }
-        let answers_json = agent.system_one(state, &round_qs)?.to_json();
+        let round_result = agent.system_one(state, &round_qs)?;
+        total_input_tokens += round_result.input_tokens;
+        let answers_json = round_result.to_json();
         let answers = answers_json
             .get("answers")
             .and_then(|v| v.as_object())
@@ -265,7 +286,9 @@ pub fn predict_tournament(
             final_qs.insert(qid.clone(), cut(qid, &e.labels));
         }
     }
-    let mut out = agent.system_one(state, &final_qs)?.to_json();
+    let final_result = agent.system_one(state, &final_qs)?;
+    total_input_tokens += final_result.input_tokens;
+    let mut out = final_result.to_json();
     let mut tmeta = Map::new();
     for (qid, e) in &meta {
         tmeta.insert(
@@ -276,7 +299,7 @@ pub fn predict_tournament(
     out.as_object_mut()
         .unwrap()
         .insert("tournament".to_string(), Value::Object(tmeta));
-    Ok(out)
+    Ok((out, total_input_tokens))
 }
 
 fn rank<F>(
