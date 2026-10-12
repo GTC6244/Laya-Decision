@@ -16,6 +16,7 @@
 //! | `LAYA_API_KEY`   | if set, require `Authorization: Bearer <it>`         | (none)  |
 //! | `LAYA_JEV_STRICT`| project responses onto the strict Jev wire contract  | 0       |
 //! | `LAYA_MAX_CONCURRENT` | in-flight requests admitted before shedding 503 | 16      |
+//! | `LAYA_TOURNAMENT_GROUP` | answer a choice with more options than this by elimination in groups of this size; raises the choice-option cap from 100 to 255 (#302) | 0 (off) |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -45,6 +46,12 @@ const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 // score question collates one tensor row per option, so an unbounded option count on an otherwise
 // small request OOMs the worker just as a huge state would (upstream #335).
 const MAX_CHOICE_OPTIONS: usize = 100;
+// With `LAYA_TOURNAMENT_GROUP` set, a choice is narrowed in groups rather than read in one pass, so
+// its cap is Jev's documented one (255) instead (#302). The tournament reads every label within a
+// group's option budget, so the one-pass budget behind `MAX_CHOICE_OPTIONS` no longer binds. The
+// resolved group is clamped to `MAX_CHOICE_OPTIONS`, so every choice this cap newly admits has more
+// options than the group and is always narrowed, never handed to a one-pass read that cannot fit it.
+const MAX_TOURNAMENT_CHOICE_OPTIONS: usize = 255;
 const MAX_SCORE_LEVELS: usize = 32;
 const MAX_TOTAL_OPTIONS: usize = 512;
 // Concurrent requests admitted before the single inference gate. Many near-cap bodies buffered
@@ -75,6 +82,8 @@ struct AppState {
     device: String,
     /// `LAYA_JEV_STRICT`: project the response onto the strict Jev wire contract.
     jev_strict: bool,
+    /// `LAYA_TOURNAMENT_GROUP`: group size for choices answered by elimination; 0 is off (#302).
+    tournament_group: usize,
 }
 
 /// Project a result onto the strict Jev wire contract (`LAYA_JEV_STRICT`).
@@ -161,6 +170,113 @@ fn add_jev_confidence(result: Value) -> Value {
     Value::Object(out)
 }
 
+/// Decide whether a request takes the tournament (elimination) path, and if so name each large
+/// choice's full label set in criteria order (upstream `serve._predict_with_tournament`'s `large`).
+///
+/// Returns `Some(large)` only when at least one choice has more than `group` options and *every*
+/// such choice can be narrowed: a large choice carrying an `option_order`, or with a non-string
+/// label, sends the whole request to the one-pass path instead (`None`), because narrowing cannot
+/// carry an order over the full label set and an eliminated-option probability is keyed by a string
+/// label (#1062). A non-choice question, or a choice within `group`, is left out of the map.
+fn tournament_targets(
+    questions: &laya::Questions,
+    group: usize,
+) -> Option<Vec<(String, Vec<String>)>> {
+    let mut large: Vec<(String, Vec<String>)> = Vec::new();
+    for (qid, question) in questions {
+        let Some(q) = question.as_object() else {
+            continue;
+        };
+        if q.get("type").and_then(|v| v.as_str()) != Some("choice") {
+            continue;
+        }
+        let labels: Vec<String> = match q.get("criteria") {
+            Some(Value::Object(m)) if m.len() > group => m.keys().cloned().collect(),
+            Some(Value::Array(a)) if a.len() > group => {
+                let mut labels = Vec::with_capacity(a.len());
+                for el in a {
+                    // A non-string label cannot key an eliminated-option probability; the whole
+                    // request falls back to the one-pass path, as upstream's `all(isinstance str)`.
+                    match el.as_str() {
+                        Some(s) => labels.push(s.to_string()),
+                        None => return None,
+                    }
+                }
+                labels
+            }
+            _ => continue,
+        };
+        // An `option_order` is sized for the full label set and no longer fits once a round cuts
+        // the choice; a large choice carrying one sends the request one-pass (upstream #1062).
+        if q.get("option_order").is_some_and(|v| !v.is_null()) {
+            return None;
+        }
+        large.push((qid.clone(), labels));
+    }
+    if large.is_empty() {
+        None
+    } else {
+        Some(large)
+    }
+}
+
+/// Project a [`laya::shortlist::predict_tournament_with_usage`] result onto the Jev wire shape
+/// (upstream `serve._predict_with_tournament`'s post-processing).
+///
+/// For each large choice that actually went through a round, the `probabilities` map is re-expanded
+/// over every original label in criteria order — a finalist keeps the final round's probability, an
+/// eliminated option carries `0.0`, so `choice` is still the argmax and the values still sum to 1 —
+/// and an `x_tournament` entry records the finalists and round count. The `tournament` metadata key
+/// is dropped from the top level. `usage.input_tokens` is overwritten with `total_input_tokens`
+/// (summed over every forward pass); the other usage keys stay the final call's.
+fn project_tournament(
+    mut result: Value,
+    large: &[(String, Vec<String>)],
+    total_input_tokens: usize,
+) -> Value {
+    let tournament = result.as_object_mut().and_then(|o| o.remove("tournament"));
+    let tmeta = tournament.as_ref().and_then(|v| v.as_object());
+    if let Some(answers) = result.get_mut("answers").and_then(|v| v.as_object_mut()) {
+        for (qid, labels) in large {
+            let Some(meta) = tmeta.and_then(|m| m.get(qid)).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            // A choice that needed no round keeps its one-pass answer untouched (upstream skips it).
+            if meta.get("rounds").and_then(|v| v.as_u64()).unwrap_or(0) == 0 {
+                continue;
+            }
+            let Some(answer) = answers.get_mut(qid).and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            let final_probs = answer
+                .get("probabilities")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let mut probabilities = serde_json::Map::with_capacity(labels.len());
+            for label in labels {
+                let p = final_probs
+                    .get(label)
+                    .cloned()
+                    .unwrap_or_else(|| json!(0.0));
+                probabilities.insert(label.clone(), p);
+            }
+            answer.insert("probabilities".to_string(), Value::Object(probabilities));
+            answer.insert(
+                "x_tournament".to_string(),
+                json!({
+                    "finalists": meta.get("labels").cloned().unwrap_or_else(|| json!([])),
+                    "rounds": meta.get("rounds").cloned().unwrap_or_else(|| json!(0)),
+                }),
+            );
+        }
+    }
+    if let Some(usage) = result.get_mut("usage").and_then(|v| v.as_object_mut()) {
+        usage.insert("input_tokens".to_string(), json!(total_input_tokens));
+    }
+    result
+}
+
 /// Positive integer from an env var, or `default` when unset, empty or unparseable.
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -177,6 +293,26 @@ fn env_bool(name: &str, default: bool) -> bool {
             "1" | "true" | "yes" | "on"
         ),
         Err(_) => default,
+    }
+}
+
+/// Group size for choices answered by elimination, read from `LAYA_TOURNAMENT_GROUP`; 0 is off
+/// (upstream `serve._resolve_tournament_group`). See [`parse_tournament_group`] for the rules.
+fn resolve_tournament_group() -> usize {
+    parse_tournament_group(std::env::var("LAYA_TOURNAMENT_GROUP").ok().as_deref())
+}
+
+/// Parse a `LAYA_TOURNAMENT_GROUP` value. Anything unset, empty, unparseable, below 2 or above
+/// `MAX_CHOICE_OPTIONS` leaves it off (0), so the one-pass path stays the default. The upper bound
+/// keeps the raised cap honest: every choice `MAX_TOURNAMENT_CHOICE_OPTIONS` newly admits has more
+/// than `MAX_CHOICE_OPTIONS` options, so it is always over the group and always narrowed (#302).
+fn parse_tournament_group(raw: Option<&str>) -> usize {
+    match raw.map(str::trim).unwrap_or("") {
+        "" => 0,
+        s => match s.parse::<usize>() {
+            Ok(n) if (2..=MAX_CHOICE_OPTIONS).contains(&n) => n,
+            _ => 0,
+        },
     }
 }
 
@@ -426,6 +562,13 @@ async fn systemone(
     }
     // Bound the number of answer options across questions: each choice label or score level becomes
     // one collated tensor row, so an unbounded count amplifies a small request (upstream #335).
+    // With `LAYA_TOURNAMENT_GROUP` set, a choice is narrowed in groups rather than read in one pass,
+    // so the choice cap is the larger `MAX_TOURNAMENT_CHOICE_OPTIONS` instead (#302).
+    let max_choice_options = if app.tournament_group > 0 {
+        MAX_TOURNAMENT_CHOICE_OPTIONS
+    } else {
+        MAX_CHOICE_OPTIONS
+    };
     let mut total_options = 0usize;
     for (qid, question) in &questions {
         let Some(q) = question.as_object() else {
@@ -440,11 +583,11 @@ async fn systemone(
         match qtype {
             Some("choice") => {
                 total_options += count;
-                if count > MAX_CHOICE_OPTIONS {
+                if count > max_choice_options {
                     return Err(err(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         &format!(
-                            "too many choice options for {qid:?} ({count} > {MAX_CHOICE_OPTIONS})"
+                            "too many choice options for {qid:?} ({count} > {max_choice_options})"
                         ),
                     ));
                 }
@@ -541,6 +684,16 @@ async fn systemone(
     let lang_guess = validate_lang(obj, "lang_guess")?;
 
     let router = app.router.clone();
+    // Whether this request answers a large choice by elimination (`LAYA_TOURNAMENT_GROUP`), and the
+    // full label set of each such choice for re-expanding its probabilities afterwards (#302). When
+    // the knob is off, or no choice is large enough (or one cannot be narrowed), this is `None` and
+    // the one-pass `Router::predict` path runs exactly as before.
+    let tournament = if app.tournament_group > 0 {
+        tournament_targets(&questions, app.tournament_group)
+    } else {
+        None
+    };
+    let tournament_group = app.tournament_group;
     // One forward pass at a time: hold a permit across the blocking inference.
     let permit = app
         .gate
@@ -557,9 +710,31 @@ async fn systemone(
             lang: lang.as_deref(),
             lang_guess: lang_guess.as_deref(),
         };
-        router
-            .predict(&state, &questions, &hints)
-            .map(|r| r.to_json())
+        match tournament {
+            Some(large) => {
+                // Route and load the checkpoint once; every elimination round and the final
+                // answer run on it. Routing is a pure function of the (unchanged) state, so this
+                // matches re-routing each round, which is how upstream drives the tournament.
+                let decision = router.route(&state, Some(&questions), &hints)?;
+                let agent = router.load(&decision.model)?;
+                let (out, total_input) = laya::shortlist::predict_tournament_with_usage(
+                    &agent,
+                    &state,
+                    &questions,
+                    tournament_group,
+                )?;
+                let mut out = project_tournament(out, &large, total_input);
+                // `predict_tournament` answers through `system_one`, which carries no routing;
+                // attach it here so the response matches the one-pass path's `routing` field.
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("routing".to_string(), decision.to_json());
+                }
+                Ok(out)
+            }
+            None => router
+                .predict(&state, &questions, &hints)
+                .map(|r| r.to_json()),
+        }
     })
     .await;
     let infer_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -627,6 +802,7 @@ async fn main() {
         api_key: std::env::var("LAYA_API_KEY").ok().filter(|s| !s.is_empty()),
         device,
         jev_strict: env_bool("LAYA_JEV_STRICT", false),
+        tournament_group: resolve_tournament_group(),
     };
 
     let app = AxumRouter::new()
@@ -740,5 +916,133 @@ mod tests {
         // Laya's own numbers are untouched, and a noul answer gets no Jev confidence.
         assert_eq!(out["answers"]["queue"]["confidence"], json!(0.797));
         assert!(out["answers"]["threat"].get("x_jev_confidence").is_none());
+    }
+
+    #[test]
+    fn parse_tournament_group_bounds() {
+        // Unset / empty / unparseable / below 2 / above the one-pass cap all leave it off.
+        assert_eq!(parse_tournament_group(None), 0);
+        assert_eq!(parse_tournament_group(Some("")), 0);
+        assert_eq!(parse_tournament_group(Some("  ")), 0);
+        assert_eq!(parse_tournament_group(Some("abc")), 0);
+        assert_eq!(parse_tournament_group(Some("1")), 0);
+        assert_eq!(parse_tournament_group(Some("0")), 0);
+        assert_eq!(
+            parse_tournament_group(Some(&(MAX_CHOICE_OPTIONS + 1).to_string())),
+            0
+        );
+        // In range (2..=MAX_CHOICE_OPTIONS), including both ends, is honoured.
+        assert_eq!(parse_tournament_group(Some("2")), 2);
+        assert_eq!(parse_tournament_group(Some(" 16 ")), 16);
+        assert_eq!(
+            parse_tournament_group(Some(&MAX_CHOICE_OPTIONS.to_string())),
+            MAX_CHOICE_OPTIONS
+        );
+    }
+
+    fn choice(options: usize) -> Value {
+        let criteria: serde_json::Map<String, Value> = (0..options)
+            .map(|i| (format!("opt{i}"), json!(format!("option {i}"))))
+            .collect();
+        json!({"type": "choice", "criteria": Value::Object(criteria)})
+    }
+
+    #[test]
+    fn tournament_targets_picks_only_large_narrowable_choices() {
+        // No choice over the group -> one-pass (None).
+        let mut qs = laya::Questions::new();
+        qs.insert("small".into(), choice(3));
+        qs.insert("note".into(), json!({"type": "noul"}));
+        assert!(tournament_targets(&qs, 4).is_none());
+
+        // One large choice -> Some, carrying its full label set in criteria order.
+        let mut qs = laya::Questions::new();
+        qs.insert("big".into(), choice(10));
+        qs.insert("small".into(), choice(2));
+        let large = tournament_targets(&qs, 4).expect("a large choice");
+        assert_eq!(large.len(), 1);
+        assert_eq!(large[0].0, "big");
+        assert_eq!(large[0].1.len(), 10);
+        assert_eq!(large[0].1[0], "opt0");
+
+        // A large choice carrying an option_order cannot be narrowed -> whole request one-pass.
+        let mut big = choice(10);
+        big.as_object_mut()
+            .unwrap()
+            .insert("option_order".into(), json!((0..10).collect::<Vec<_>>()));
+        let mut qs = laya::Questions::new();
+        qs.insert("big".into(), big);
+        assert!(tournament_targets(&qs, 4).is_none());
+
+        // A large array-criteria choice with a non-string label -> one-pass.
+        let mut qs = laya::Questions::new();
+        qs.insert(
+            "big".into(),
+            json!({"type": "choice", "criteria": [1, 2, 3, 4, 5]}),
+        );
+        assert!(tournament_targets(&qs, 4).is_none());
+    }
+
+    #[test]
+    fn project_tournament_reexpands_probabilities_and_records_rounds() {
+        // The library result: `big` went through a round, its probabilities are over the two
+        // finalists only, and the top level carries the `tournament` metadata.
+        let result = json!({
+            "model": "english",
+            "answers": {
+                "big": {"type": "choice", "choice": "opt2", "confidence": 0.8,
+                        "probabilities": {"opt2": 0.7, "opt5": 0.3}},
+            },
+            "usage": {"input_tokens": 40, "output_tokens": 8},
+            "tournament": {"big": {"labels": ["opt2", "opt5"], "n": 6, "rounds": 1}},
+        });
+        let labels: Vec<String> = (0..6).map(|i| format!("opt{i}")).collect();
+        let large = vec![("big".to_string(), labels)];
+        let out = project_tournament(result, &large, 123);
+
+        let probs = out["answers"]["big"]["probabilities"].as_object().unwrap();
+        // Every original label is named, in criteria order; eliminated options carry 0.0.
+        assert_eq!(probs.len(), 6);
+        assert_eq!(probs["opt2"], json!(0.7));
+        assert_eq!(probs["opt5"], json!(0.3));
+        assert_eq!(probs["opt0"], json!(0.0));
+        assert_eq!(probs["opt4"], json!(0.0));
+        // The values still sum to 1 and `choice` is still the argmax.
+        assert_eq!(out["answers"]["big"]["choice"], json!("opt2"));
+        // x_tournament records the finalists and the round count.
+        assert_eq!(
+            out["answers"]["big"]["x_tournament"]["finalists"],
+            json!(["opt2", "opt5"])
+        );
+        assert_eq!(out["answers"]["big"]["x_tournament"]["rounds"], json!(1));
+        // input_tokens is the summed total; output_tokens stays the final call's; tournament gone.
+        assert_eq!(out["usage"]["input_tokens"], json!(123));
+        assert_eq!(out["usage"]["output_tokens"], json!(8));
+        assert!(out.get("tournament").is_none());
+    }
+
+    #[test]
+    fn project_tournament_leaves_a_passthrough_choice_untouched() {
+        // `rounds: 0` means the choice fit in one pass; its one-pass answer is kept as is, with no
+        // probability re-expansion and no x_tournament.
+        let result = json!({
+            "model": "english",
+            "answers": {
+                "big": {"type": "choice", "choice": "opt0", "confidence": 0.9,
+                        "probabilities": {"opt0": 0.6, "opt1": 0.4}},
+            },
+            "usage": {"input_tokens": 20, "output_tokens": 4},
+            "tournament": {"big": {"labels": ["opt0", "opt1"], "n": 2, "rounds": 0}},
+        });
+        let large = vec![("big".to_string(), vec!["opt0".into(), "opt1".into()])];
+        let out = project_tournament(result, &large, 20);
+        assert_eq!(
+            out["answers"]["big"]["probabilities"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(out["answers"]["big"].get("x_tournament").is_none());
     }
 }

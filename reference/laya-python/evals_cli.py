@@ -371,12 +371,19 @@ def _cmd_run(args) -> int:
             if revisions:
                 pins["revisions"] = revisions
             router = laya.Router(device=args.device, preload=False, **pins)
+            # `--model` is not a constructor argument: it is stamped onto every row and resolved by
+            # the first row itself. Resolving it here asks the Router that will answer, so the
+            # checkpoint names this run can serve are the names it accepts.
+            if args.model:
+                router.resolve(args.model)
         except ValueError as exc:
             # `Router` already rejects a checkpoint name it does not know -- normalising case,
-            # surrounding spaces and aliases on the way -- with the option list in the message.
-            # This only turns that into `laya-evals: unknown model 'englishg'; choose one of …`
-            # instead of a traceback, so a mistyped pin fails as a usage error and never starts a
-            # download.
+            # surrounding spaces and aliases on the way -- with the option list in the message, for
+            # a `--revision` pin at construction and for `--model` just above. This only turns that
+            # into `laya-evals: unknown model 'englishg'; choose one of …` instead of a traceback,
+            # so a mistyped checkpoint fails as a usage error and never starts a download. Left to
+            # the row, `--model` raised inside `evaluate`, where its ValueError escaped as exit 1 --
+            # the code that means a threshold or baseline failed.
             raise EvalError(str(exc)) from exc
         runner = RouterRunner(router)
     config = {"dataset": args.dataset, "model": args.model, "device": args.device,
@@ -401,8 +408,16 @@ def _cmd_run(args) -> int:
     # the run: `preload=False` means no checkpoint is resident before the first row.
     # `loaded_revisions` reports the commit each resident agent came from -- the pin when there is
     # one, the commit the default branch resolved to when there is not, None for a local path.
-    if router is not None:
-        report.config = dict(report.config, revisions=getattr(router, "loaded_revisions", {}))
+    # The ONNX arm answers from one checkpoint and `ONNXAgent` resolves the same fact for it
+    # (`self.revision`, `laya/onnx_agent.py`), so the block is written there too: `--revision`
+    # promises "the report records the commit that answered either way", and a `revisions` block
+    # that only ever appears on the torch path does not keep it -- nor does the config table in
+    # `docs/evals.md`, which documents `revisions` for every `run`.
+    if args.onnx:
+        revisions = {agent.model_id: getattr(agent, "revision", None)}
+    else:
+        revisions = getattr(router, "loaded_revisions", {})
+    report.config = dict(report.config, revisions=revisions)
 
     if extra:
         _warn_no_value(extra, report)
