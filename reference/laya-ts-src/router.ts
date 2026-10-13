@@ -121,6 +121,7 @@ export interface RouterOptions {
   token?: string | null;
   maxLoaded?: number;
   max_loaded?: number;
+  /** Fallback for unidentified text. Defaults to "multilingual", matching Python 0.4.0. */
   default?: string;
   autoTaskDetection?: boolean;
   auto_task_detection?: boolean;
@@ -302,7 +303,7 @@ export class Router extends HookRegistry {
       }
     }
     this.maxLoaded = Math.max(1, Math.trunc(Number(opts.maxLoaded ?? opts.max_loaded ?? 2)));
-    this.default = normaliseName(opts.default ?? "english");
+    this.default = normaliseName(opts.default ?? "multilingual");
     this.autoTaskDetection = Boolean(opts.autoTaskDetection ?? opts.auto_task_detection ?? false);
     this.langGuess = opts.langGuess ?? opts.lang_guess ?? null;
     this.loader = opts.loader ?? null;
@@ -710,6 +711,9 @@ export class Router extends HookRegistry {
       }
       if (!("state" in request)) {
         throw new Error(`request ${i} is missing required key 'state'`);
+      }
+      if (request.state === null || request.state === undefined) {
+        throw new TypeError(`request ${i} 'state' must not be None; pass a string, dict, or list`);
       }
       if (!("questions" in request)) {
         throw new Error(`request ${i} is missing required key 'questions'`);

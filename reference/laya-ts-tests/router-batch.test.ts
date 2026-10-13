@@ -37,7 +37,7 @@ const makeRouter = (opts: Record<string, unknown> = {}) => {
       },
     };
   };
-  const router = new Router({ loader: loader as never, ...opts });
+  const router = new Router({ default: "english", loader: loader as never, ...opts });
   return { router, built, calls };
 };
 
@@ -85,6 +85,9 @@ describe("Router.routeBatch / predictBatch", () => {
     expect(() => router.routeBatch([null] as never)).toThrow(/request 0/);
     expect(() => router.routeBatch([{ questions: Q }] as never)).toThrow(
       /request 0 is missing required key 'state'/,
+    );
+    expect(() => router.routeBatch([{ state: null, questions: Q }] as never)).toThrow(
+      /request 0 'state' must not be None/,
     );
     expect(() => router.routeBatch([{ state: "x" }] as never)).toThrow(
       /request 0 is missing required key 'questions'/,

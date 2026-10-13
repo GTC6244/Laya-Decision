@@ -329,20 +329,51 @@ export function resolveMinConfidence(
 }
 
 /**
+ * The number the abstention gate compares against the threshold, or null if there is none.
+ *
+ * Mirrors Python `laya.confidence._gate_confidence` exactly, including the two places it is
+ * easy to get wrong:
+ *
+ * - the fallback is taken whenever `answer_confidence` is not a usable number, not only when
+ *   it is absent or null. An `answer_confidence` of `NaN` beside a usable `confidence` is
+ *   gated on the `confidence`, because "unusable" and "missing" are the same case here;
+ * - a number outside [0, 1] is still a number. It is compared, not discarded: a negative
+ *   `answer_confidence` is below every threshold and so is flagged, and one above 1 clears
+ *   every threshold. Treating out-of-range as "nothing to gate on" would silently clear a
+ *   marker Python sets.
+ *
+ * null means no usable number, never an unusable one, which is what lets the caller tell
+ * "nothing to gate on" from "a gate ran".
+ */
+function gateConfidence(answer: Record<string, unknown>): number | null {
+  const primary = answer.answer_confidence;
+  if (typeof primary === "number" && Number.isFinite(primary)) return primary;
+  const fallback = answer.confidence;
+  if (typeof fallback === "number" && Number.isFinite(fallback)) return fallback;
+  return null;
+}
+
+/**
  * Opt-in abstention marker (#361, #394): flag answers whose confidence falls below `min_confidence`.
  *
  * Reads `answer_confidence` (the calibrated max(p) confidence, invariant to label count k),
- * falling back to `confidence` if `answer_confidence` is absent.
- * The raw answer and confidence stay intact; `low_confidence: true` is added.
+ * falling back to `confidence` whenever `answer_confidence` is not a usable number -- see
+ * `gateConfidence`, which mirrors Python's `_gate_confidence`.
+ * The raw answer and confidence stay intact; `low_confidence: true` is added when the answer
+ * falls below the threshold, and removed if a previously-flagged answer now clears it (e.g.
+ * when a result dict is reused or re-evaluated with a different threshold).
  *
  * Supports both a scalar number in [0.0, 1.0] and a per-bucket mapping of thresholds.
+ *
+ * Exactly 0.0 runs this same loop rather than short-circuiting out of it. Nothing falls below
+ * it, so it marks no answer -- and the pass is what clears a marker an earlier, stricter threshold
+ * left on a reused payload (#910).
  */
 export function flagLowConfidence(
   results: Array<Record<string, unknown>> | Record<string, unknown>,
   minConfidence: MinConfidence,
 ): void {
   const isMap = typeof minConfidence === "object" && minConfidence !== null;
-  if (!isMap && minConfidence === 0.0) return;
   const list = Array.isArray(results) ? results : [results];
   for (const res of list) {
     const answers = res && typeof res === "object" ? (res as Record<string, unknown>).answers : null;
@@ -350,15 +381,16 @@ export function flagLowConfidence(
     for (const a of Object.values(answers as Record<string, unknown>)) {
       if (!a || typeof a !== "object") continue;
       const ansObj = a as Record<string, unknown>;
-      let conf = ansObj.answer_confidence;
-      if (conf === undefined || conf === null) {
-        conf = ansObj.confidence;
+      const conf = gateConfidence(ansObj);
+      if (conf === null) {
+        delete ansObj.low_confidence;
+        continue;
       }
-      if (typeof conf === "number" && !Number.isNaN(conf)) {
-        const thr = isMap ? resolveMinConfidence(ansObj, minConfidence) : minConfidence;
-        if (conf < thr) {
-          ansObj.low_confidence = true;
-        }
+      const thr = isMap ? resolveMinConfidence(ansObj, minConfidence) : minConfidence;
+      if (conf < thr) {
+        ansObj.low_confidence = true;
+      } else {
+        delete ansObj.low_confidence;
       }
     }
   }
