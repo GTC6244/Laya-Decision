@@ -3,6 +3,46 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.10 — tracks upstream Laya 0.4.6 (upstream @c73908d)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @682ac67, 0.4.4) across
+the 0.4.5 and 0.4.6 releases. The 41-commit span is almost entirely docs, tests, CI (a new Windows
+job), language bindings (`laya-ts`), and modules this port does not carry (`calibrate`, `evals`,
+`mcp`, `onnx_agent`). Six `laya/` files changed; **none reaches a landing site on the Rust carried
+surface** — every one is a docstring, a type annotation, a release-version bump, or a change on a
+batch path this port does not carry. Nothing is ported; the changes are listed below. Vendored
+`reference/` snapshots are synced to upstream @c73908d, and `UPSTREAM_VERSION` now reads `0.4.6`.
+
+### Unported upstream changes
+
+- **`confidence_from_probs`'s `k < 2 → 1.0` floor documented** (upstream #… `099e258` docs,
+  `2209115` test): a docstring and a test pinning behaviour that did not move. The Rust
+  `common::confidence_from_probs` already returns `1.0` for `k < 2` (with its own test), so parity
+  holds and there is nothing to change.
+- **`Router.predict_batch` / `route_batch` rejecting a `None` `state`** (upstream #707, `8d57836`;
+  mirrored into `laya-ts`'s `router.ts` validation loop): the Rust `Router` carries no
+  `predict_batch` / `route_batch`, and both the single-request `Router::route` and
+  `Agent::predict`/`predict_batch` take a typed `State` (`serde_json::Value`) in which a Python-style
+  `None` is not representable, so there is no loop to guard.
+- **`load()`'s return type annotated `Union[Agent, "ONNXAgent"]` under `TYPE_CHECKING`** (upstream
+  `54236b4`): a type annotation and docstring for the Python ONNX load path. This port's backend is
+  candle, not ONNX, and has no `load()` with a Python-style union return, so there is no code site.
+- **`cached_embed_fn` documenting that a repaired non-finite row is cached** (upstream `ac0e68a`
+  docs, `e4fa6a7` test): a docstring and a test. As noted at 0.2.9, the Rust shortlist takes a
+  caller-supplied `embed_fn` directly and carries no embedding cache to guard.
+- **`laya-ts` confidence-gate and multilingual-routing-default fixes** (upstream `3c645e9`,
+  `5804f83` #910, `cda0216`): already recorded as unported at 0.2.8/0.2.9 — the Rust single-request
+  surface carries no `min_confidence` gate (so there is no stale `low_confidence` marker to clear at
+  `0.0`), and this port's `Router` deliberately defaults to `english`, not `multilingual`.
+- **`calibrate` row-weighting / ragged-pool fixes** (upstream `97bb3a6`, `b8858ef`): the
+  `calibrate` module is not carried.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.9: `lang`, `email`, `presets`,
+`confidence`, `structured` and `router`'s `route` path did not move between 0.4.4 and 0.4.6
+(`router`'s only change is on `route_batch`, which `route` never reaches, and `common`'s is a
+docstring). Vendored `reference/` snapshots synced to upstream @c73908d, and `UPSTREAM_VERSION` now
+reads `0.4.6`.
+
 ## 0.2.9 — tracks upstream Laya 0.4.4 (upstream @682ac67)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @6880462, 0.4.2) across
