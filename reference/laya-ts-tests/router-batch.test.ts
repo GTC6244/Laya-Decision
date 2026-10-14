@@ -37,7 +37,7 @@ const makeRouter = (opts: Record<string, unknown> = {}) => {
       },
     };
   };
-  const router = new Router({ loader: loader as never, ...opts });
+  const router = new Router({ default: "english", loader: loader as never, ...opts });
   return { router, built, calls };
 };
 
@@ -85,6 +85,9 @@ describe("Router.routeBatch / predictBatch", () => {
     expect(() => router.routeBatch([null] as never)).toThrow(/request 0/);
     expect(() => router.routeBatch([{ questions: Q }] as never)).toThrow(
       /request 0 is missing required key 'state'/,
+    );
+    expect(() => router.routeBatch([{ state: null, questions: Q }] as never)).toThrow(
+      /request 0 'state' must not be None/,
     );
     expect(() => router.routeBatch([{ state: "x" }] as never)).toThrow(
       /request 0 is missing required key 'questions'/,
@@ -302,6 +305,42 @@ describe("Router.routeBatch / predictBatch", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // Two gaps the cases above leave open, both named when #943 was closed in favour of #936.
+  it("lets a per-call hooksRaise turn raising on where the router has it off", async () => {
+    const throwing = {
+      onPredictEnd() {
+        throw new Error("hook blew up");
+      },
+    };
+    const quiet = makeRouter({ hooks: [throwing], hooksRaise: false });
+    // Router-level off, nothing per-call: the hook throws and the call still succeeds.
+    expect((await quiet.router.predictBatch([req("s", { model: "english" })])).length).toBe(1);
+
+    const loud = makeRouter({ hooks: [throwing], hooksRaise: false });
+    // The override only means something if it is honoured here: without it this resolves.
+    await expect(
+      loud.router.predictBatch([req("s", { model: "english" })], null, { hooksRaise: true }),
+    ).rejects.toThrow("hook blew up");
+  });
+
+  it("appends per-call callbacks after per-call hooks, the composition predict uses", async () => {
+    // Order, not membership: both entries run under either composition, so only the sequence
+    // fails if the arguments to composeHooks are swapped.
+    const order: string[] = [];
+    const { router } = makeRouter({});
+    await router.predictBatch([req("s", { model: "english" })], null, {
+      hooks: [{
+        onPredictStart() {
+          order.push("hooks");
+        },
+      }],
+      onPredictStart() {
+        order.push("onPredictStart");
+      },
+    });
+    expect(order).toEqual(["hooks", "onPredictStart"]);
   });
 
   it("predictMany forwards onPredictStart, onPredictEnd and hooksRaise", async () => {

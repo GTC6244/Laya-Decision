@@ -3,6 +3,75 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.10 — tracks upstream Laya 0.4.7 (upstream @147a639)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @682ac67, 0.4.4) across
+the 0.4.5, 0.4.6 and 0.4.7 releases. The 159-commit span is mostly language bindings (`laya-java`,
+`laya-dotnet`, `laya-ts`, `laya-go`), docs/compose/ci work, and modules this port does not carry
+(`calibrate`, `evals`, `evals_tournament`, `evidence`, `mcp`, `onnx_agent`, and the
+`Router.predict_batch` / batch-endpoint surface). Two changes reach the carried surface and are
+ported; the rest have no code site on the Rust surface and are listed below.
+
+### Changed
+- **`laya-serve` narrows an over-cap tournament choice instead of reading it in one pass (upstream
+  #1062).** With `LAYA_TOURNAMENT_GROUP` set, the choice-option cap is raised to 255
+  (`MAX_TOURNAMENT_CHOICE_OPTIONS`), but the one-pass read behind `MAX_CHOICE_OPTIONS` (100) was
+  never sized for a choice that large. Before, a large choice carrying an `option_order` — or an
+  array-criteria choice with a non-string label — sent the *whole* request back to the one-pass
+  path, which for a choice over 100 options meant reading more options in a single span than that
+  path is built for. Now, once any choice in the request is over `MAX_CHOICE_OPTIONS` (a size only
+  the raised cap admits and one pass was never asked to read), the request must be answered by
+  elimination: such a choice's `option_order` is dropped — it no longer fits the kept labels once a
+  round cuts the choice — and the drop is reported as `x_tournament.option_order_dropped: true`,
+  while a choice whose labels are not all strings (an eliminated-option probability is keyed by a
+  string label) is refused with 422 rather than silently one-passed. A request whose large choices
+  are all within `MAX_CHOICE_OPTIONS` keeps the previous behaviour: an `option_order` or a
+  non-string label still sends it to the one-pass path. Strict mode (`LAYA_JEV_STRICT`) still serves
+  only the contracted keys, so `x_tournament` — and the new marker inside it — is dropped there
+  (upstream `serve._tournament_plan`, `feat(serve)`).
+
+### Fixed
+- **The `laya` CLI's interactive mode now reports a failed request in its exit code.** `laya` with
+  no request text reads one request per line from stdin; a handled failure (a `laya: …` line on
+  stderr and exit `2` from `run`) stays non-fatal to the session, but the loop discarded that code
+  and the process always exited `0`. `laya < requests.txt` therefore exited `0` with answers missing
+  and only stderr to say so. The loop now keeps the last non-zero code and returns it on exit, so a
+  pipeline sees the failure (upstream `cli.interactive`).
+
+### Unported upstream changes
+
+The rest of the carried-surface churn has no landing site on this port and is deliberately skipped:
+
+- **`temperature_rejected` and the `resolve_lang_temperatures` warnings** (upstream `common.py`,
+  and `agent.py`'s checkpoint-load diagnostic that now routes through it): the helper distinguishes
+  a replaced temperature from an accepted one so a bool `true` (which `float(True) == 1.0` had made
+  look accepted) is named in a `RuntimeWarning`. The Rust port carries no `lang_temperatures`
+  per-language option and emits no temperature-load warning at all — `load_temperature` /
+  `load_temperature_by_options` clamp silently, and `clamp_temperature` already routes a JSON bool
+  to the neutral `1.0` fallback — so there is no diagnostic to correct.
+- **`Router.predict_batch` raising `TypeError` on a `None` `state`** (upstream `router.py`): the
+  Rust `Router` has no `predict_batch`.
+- **`shortlist._call_predict`'s dict check consolidation and the new `_round_answers`** (upstream
+  `shortlist.py`): these name the agent-reply contract (`a dict`, with an `answers` dict) instead of
+  raising a bare indexing error. The Rust tournament calls the strongly-typed `agent.system_one`,
+  which cannot return a non-dict, and the round loop already guards the `answers` lookup, so the
+  checks are no-ops on the typed surface.
+- **`shortlist.cached_embed_fn`'s NaN-caching docstring** (upstream `shortlist.py`): the Rust
+  shortlist takes a caller-supplied `embed_fn` directly and carries no embedding cache.
+- **`serve`'s batch-endpoint changes** — `_check_batch_limits` taking a `max_choice_options`
+  argument, and `create_app`'s `_do_batch` running the tournament per state (upstream `serve.py`):
+  `laya-serve` exposes no batch endpoint.
+- **`load(...) -> Union[Agent, "ONNXAgent"]`'s return annotation** (upstream `agent.py`): the ONNX
+  backend is not carried.
+- Docstring-only edits in `common.confidence_from_probs` (the `k < 2 → 1.0` behaviour, unchanged and
+  mirrored by the Rust `confidence_from_probs`) and elsewhere.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.9: language detection, routing,
+and email cleaning did not move between 0.4.4 and 0.4.7 (`lang`, `email`, `presets`, `structured`
+and `confidence` have zero diff lines, and `router`'s only change is on `predict_batch`, which
+`route` never reaches). Vendored `reference/` snapshots synced to upstream @147a639, and
+`UPSTREAM_VERSION` now reads `0.4.7`.
+
 ## 0.2.9 — tracks upstream Laya 0.4.4 (upstream @682ac67)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @6880462, 0.4.2) across

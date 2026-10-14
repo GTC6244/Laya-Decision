@@ -28,6 +28,7 @@ from laya.common import (
     window_batch_cap,
     window_budget,
     temp_bucket,
+    temperature_rejected,
     unpermute_probs,
     TEMP_MIN,
     TEMP_MAX,
@@ -204,13 +205,8 @@ class ONNXAgent(HookRegistry):
         entries += [("temperature[%d]" % i, t, self.temperature[i]) for i, t in enumerate(self.temperature_raw)]
         rejected = []
         for name, raw, applied in entries:
-            try:
-                if float(raw) == applied:
-                    continue
-            except (TypeError, ValueError):
-                # Invalid entries already have a neutral fallback; diagnostics must not
-                # repeat the failed conversion or prevent the checkpoint from loading.
-                pass
+            if not temperature_rejected(raw, applied):
+                continue
             rejected.append("%s=%r -> %g" % (name, raw, applied))
         if rejected:
             warnings.warn(
@@ -431,7 +427,9 @@ class ONNXAgent(HookRegistry):
                     (`max(64, max_len - head_max_len - 8)`; the 64 is a floor). Smaller windows
                     isolate a localized signal better at the cost of more windows, as in
                     `Agent.predict_long`.
-            stride: Token step between windows. Defaults to `window // 2` (50% overlap).
+            stride: Token step between windows. Defaults to half the *effective* window -- the
+                    window these questions leave room for, which is smaller than the `window` that
+                    was asked for once the room caps it (50% overlap either way).
             aggregate: "auto" (the per-type rules above) is the only mode for now.
             batch_size: Cap on windows per session run, to bound peak memory on very long states.
             lang: Per-language temperature selection, as in `system_one`.

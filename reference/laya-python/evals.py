@@ -201,7 +201,10 @@ def questions_fingerprint(dataset: "Dataset") -> str:
     Laya already applies to its own question identity: `laya/router.py::_question_schema` and this
     module's batch grouping (`laya/evals.py::evaluate`) both hash the whole questions dict.
     `tests/test_router_batch.py:543` pins that rewording `instructions` alone moves a row into its
-    own batch group.
+    own batch group. Those two need nothing when a question grows a field, because a whole-dict hash
+    takes whatever the dict holds; this one lists its fields, so a sixth field
+    `laya/agent.py::Agent._check_question` starts reading has to be added here as well or the
+    identity goes blind to it again.
 
     It is a function of the decision space, not of the rows, so scoring more states on the same
     questions leaves it unchanged.
@@ -217,15 +220,29 @@ def questions_fingerprint(dataset: "Dataset") -> str:
     the internal question, and that resolver is what turns it into the option text the model
     reads. Leaving it out let two question sets with different rendered options hash alike, which
     is the one thing this function exists to prevent.
+
+    `option_order` is the fifth and last field a question body can carry, and it was the one left
+    out: `laya/agent.py::Agent._check_question` accepts only a permutation of the option indices,
+    `Agent._to_internal` copies it into the internal question, and from there it reaches both the
+    tokenized head (`laya/common.py::build_sequence` through `build_head`) and the reported
+    probabilities (`laya/common.py::unpermute_probs`, applied in `Agent._decode_answers`). It is
+    hashed only when a row names it, so the digest of a question set that does not use the field
+    stays the number its committed baseline already carries.
     """
     schemas = set()
     for example in dataset.examples:
         for qid, question in example.questions.items():
             body = question if isinstance(question, dict) else {}
-            schemas.add(_canonical({"qid": qid, "type": body.get("type"),
-                                    "instructions": _as_tokenized_instructions(body),
-                                    "labels": body.get("labels"),
-                                    "criteria": body.get("criteria")}))
+            hashed = {"qid": qid, "type": body.get("type"),
+                      "instructions": _as_tokenized_instructions(body),
+                      "labels": body.get("labels"),
+                      "criteria": body.get("criteria")}
+            if "option_order" in body:
+                schemas.add(_canonical(dict(hashed, option_order=body["option_order"])))
+            else:
+                # Left out rather than hashed as `null`, so a dataset that never names the field
+                # keeps the digest its committed baseline already carries.
+                schemas.add(_canonical(hashed))
     digest = hashlib.sha256()
     for schema in sorted(schemas):
         digest.update(schema.encode("utf-8"))
@@ -726,6 +743,10 @@ class EvalReport:
                 continue
             reasons.append("%s (%s): baseline is %s, this run is %s"
                            % (key, _IDENTITY_LABELS[key], there, here))
+        if self.config.get("schema") == other.get("schema") == "laya-tournament-evals-report/1":
+            here, there = self.config.get("tournament_group_size"), other.get("tournament_group_size")
+            if here is None or there is None or here != there:
+                reasons.append("tournament group size: baseline is %s, this run is %s" % (there, here))
         return (not reasons), reasons
 
     def compare(self, baseline: Dict[str, Any], tolerances: Optional[Dict[str, float]] = None,
@@ -1143,6 +1164,9 @@ def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evalua
                 shortlist = (result or {}).get("shortlist")
                 if isinstance(shortlist, dict) and qid in shortlist:
                     case["shortlist"] = shortlist[qid]
+                tournament = (result or {}).get("tournament")
+                if isinstance(tournament, dict) and qid in tournament:
+                    case["tournament"] = tournament[qid]
                 cases.append(case)
         index += len(chunk)
 
