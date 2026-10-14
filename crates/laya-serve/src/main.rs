@@ -170,19 +170,39 @@ fn add_jev_confidence(result: Value) -> Value {
     Value::Object(out)
 }
 
+/// One narrowed choice: its qid, its full label set in criteria order (for re-expanding
+/// probabilities afterwards), and whether an `option_order` was dropped to narrow it.
+type TournamentTarget = (String, Vec<String>, bool);
+
 /// Decide whether a request takes the tournament (elimination) path, and if so name each large
-/// choice's full label set in criteria order (upstream `serve._predict_with_tournament`'s `large`).
+/// choice's full label set in criteria order, with a flag for whether an `option_order` was dropped
+/// (upstream `serve._tournament_plan`).
 ///
-/// Returns `Some(large)` only when at least one choice has more than `group` options and *every*
-/// such choice can be narrowed: a large choice carrying an `option_order`, or with a non-string
-/// label, sends the whole request to the one-pass path instead (`None`), because narrowing cannot
-/// carry an order over the full label set and an eliminated-option probability is keyed by a string
-/// label (#1062). A non-choice question, or a choice within `group`, is left out of the map.
+/// A choice with more than `group` options is a candidate to narrow. `Ok(None)` keeps the whole
+/// request on the one-pass `Router::predict` path; `Ok(Some(large))` narrows every listed choice;
+/// `Err(msg)` is a request that cannot be served (surfaced as 422).
+///
+/// Every choice over `group` is narrowed, except that while one pass can still read the request a
+/// large choice carrying an `option_order`, or with a non-string label, keeps it on the one-pass
+/// path, because narrowing drops the order and an eliminated-option probability is keyed by a string
+/// label (#1062). But once any choice is over `MAX_CHOICE_OPTIONS` — which only the raised cap
+/// admits and one pass was never asked to read — the request must be narrowed: an `option_order` on
+/// a narrowed choice is dropped (reported as `x_tournament.option_order_dropped`), and a non-string
+/// label, which cannot be mapped back onto the answer, is refused instead. A non-choice question, or
+/// a choice within `group`, is left out of the map.
 fn tournament_targets(
     questions: &laya::Questions,
     group: usize,
-) -> Option<Vec<(String, Vec<String>)>> {
-    let mut large: Vec<(String, Vec<String>)> = Vec::new();
+) -> Result<Option<Vec<TournamentTarget>>, String> {
+    // One large choice: its all-string labels (`None` when a label is not a string), option count,
+    // and whether it carries an `option_order`.
+    struct Large {
+        qid: String,
+        labels: Option<Vec<String>>,
+        count: usize,
+        ordered: bool,
+    }
+    let mut large: Vec<Large> = Vec::new();
     for (qid, question) in questions {
         let Some(q) = question.as_object() else {
             continue;
@@ -190,31 +210,56 @@ fn tournament_targets(
         if q.get("type").and_then(|v| v.as_str()) != Some("choice") {
             continue;
         }
-        let labels: Vec<String> = match q.get("criteria") {
-            Some(Value::Object(m)) if m.len() > group => m.keys().cloned().collect(),
+        let (labels, count): (Option<Vec<String>>, usize) = match q.get("criteria") {
+            Some(Value::Object(m)) if m.len() > group => {
+                (Some(m.keys().cloned().collect()), m.len())
+            }
             Some(Value::Array(a)) if a.len() > group => {
-                let mut labels = Vec::with_capacity(a.len());
-                for el in a {
-                    // A non-string label cannot key an eliminated-option probability; the whole
-                    // request falls back to the one-pass path, as upstream's `all(isinstance str)`.
-                    labels.push(el.as_str()?.to_string());
-                }
-                labels
+                // A non-string label cannot key an eliminated-option probability; `None` marks the
+                // choice unmappable, as upstream's `all(isinstance label str)`.
+                let labels = a
+                    .iter()
+                    .map(|el| el.as_str().map(|s| s.to_string()))
+                    .collect::<Option<Vec<String>>>();
+                (labels, a.len())
             }
             _ => continue,
         };
-        // An `option_order` is sized for the full label set and no longer fits once a round cuts
-        // the choice; a large choice carrying one sends the request one-pass (upstream #1062).
-        if q.get("option_order").is_some_and(|v| !v.is_null()) {
-            return None;
-        }
-        large.push((qid.clone(), labels));
+        let ordered = q.get("option_order").is_some_and(|v| !v.is_null());
+        large.push(Large {
+            qid: qid.clone(),
+            labels,
+            count,
+            ordered,
+        });
     }
     if large.is_empty() {
-        None
-    } else {
-        Some(large)
+        return Ok(None);
     }
+    // A choice over `MAX_CHOICE_OPTIONS` was never admissible to the one-pass path, so the request
+    // cannot fall back to it: the choices must be narrowed (upstream #1062).
+    let over_cap = large.iter().any(|l| l.count > MAX_CHOICE_OPTIONS);
+    let first_unmappable = large.iter().find(|l| l.labels.is_none());
+    if over_cap {
+        if let Some(l) = first_unmappable {
+            return Err(format!(
+                "question {:?}: a choice is narrowed by elimination once a request has one over {} \
+                 options, and that needs every label to be a string",
+                l.qid, MAX_CHOICE_OPTIONS
+            ));
+        }
+    } else if first_unmappable.is_some() || large.iter().any(|l| l.ordered) {
+        // One pass can still read the request, and a choice here carries an order or a non-string
+        // label that narrowing could not honour; keep the whole request one-pass.
+        return Ok(None);
+    }
+    // Narrow every large choice. No unmappable label remains (the branches above returned already).
+    Ok(Some(
+        large
+            .into_iter()
+            .map(|l| (l.qid, l.labels.expect("mappable label set"), l.ordered))
+            .collect(),
+    ))
 }
 
 /// Project a [`laya::shortlist::predict_tournament_with_usage`] result onto the Jev wire shape
@@ -223,18 +268,19 @@ fn tournament_targets(
 /// For each large choice that actually went through a round, the `probabilities` map is re-expanded
 /// over every original label in criteria order — a finalist keeps the final round's probability, an
 /// eliminated option carries `0.0`, so `choice` is still the argmax and the values still sum to 1 —
-/// and an `x_tournament` entry records the finalists and round count. The `tournament` metadata key
-/// is dropped from the top level. `usage.input_tokens` is overwritten with `total_input_tokens`
-/// (summed over every forward pass); the other usage keys stay the final call's.
+/// and an `x_tournament` entry records the finalists and round count — plus `option_order_dropped`
+/// when the choice carried an `option_order` the narrowing had to drop (upstream #1062). The
+/// `tournament` metadata key is dropped from the top level. `usage.input_tokens` is overwritten with
+/// `total_input_tokens` (summed over every forward pass); the other usage keys stay the final call's.
 fn project_tournament(
     mut result: Value,
-    large: &[(String, Vec<String>)],
+    large: &[TournamentTarget],
     total_input_tokens: usize,
 ) -> Value {
     let tournament = result.as_object_mut().and_then(|o| o.remove("tournament"));
     let tmeta = tournament.as_ref().and_then(|v| v.as_object());
     if let Some(answers) = result.get_mut("answers").and_then(|v| v.as_object_mut()) {
-        for (qid, labels) in large {
+        for (qid, labels, order_dropped) in large {
             let Some(meta) = tmeta.and_then(|m| m.get(qid)).and_then(|v| v.as_object()) else {
                 continue;
             };
@@ -259,13 +305,21 @@ fn project_tournament(
                 probabilities.insert(label.clone(), p);
             }
             answer.insert("probabilities".to_string(), Value::Object(probabilities));
-            answer.insert(
-                "x_tournament".to_string(),
-                json!({
-                    "finalists": meta.get("labels").cloned().unwrap_or_else(|| json!([])),
-                    "rounds": meta.get("rounds").cloned().unwrap_or_else(|| json!(0)),
-                }),
+            let mut report = serde_json::Map::new();
+            report.insert(
+                "finalists".to_string(),
+                meta.get("labels").cloned().unwrap_or_else(|| json!([])),
             );
+            report.insert(
+                "rounds".to_string(),
+                meta.get("rounds").cloned().unwrap_or_else(|| json!(0)),
+            );
+            // Only a choice whose `option_order` the narrowing dropped carries the marker; the key
+            // is absent otherwise (upstream sets it only when `option_order is not None`).
+            if *order_dropped {
+                report.insert("option_order_dropped".to_string(), json!(true));
+            }
+            answer.insert("x_tournament".to_string(), Value::Object(report));
         }
     }
     if let Some(usage) = result.get_mut("usage").and_then(|v| v.as_object_mut()) {
@@ -686,7 +740,12 @@ async fn systemone(
     // the knob is off, or no choice is large enough (or one cannot be narrowed), this is `None` and
     // the one-pass `Router::predict` path runs exactly as before.
     let tournament = if app.tournament_group > 0 {
-        tournament_targets(&questions, app.tournament_group)
+        // A request that cannot be served by elimination (a non-string label on a choice only the
+        // raised cap admits) is refused as 422, the way upstream's ValueError surfaces.
+        match tournament_targets(&questions, app.tournament_group) {
+            Ok(t) => t,
+            Err(detail) => return Err(err(StatusCode::UNPROCESSABLE_ENTITY, &detail)),
+        }
     } else {
         None
     };
@@ -950,34 +1009,71 @@ mod tests {
         let mut qs = laya::Questions::new();
         qs.insert("small".into(), choice(3));
         qs.insert("note".into(), json!({"type": "noul"}));
-        assert!(tournament_targets(&qs, 4).is_none());
+        assert!(tournament_targets(&qs, 4).unwrap().is_none());
 
-        // One large choice -> Some, carrying its full label set in criteria order.
+        // One large choice -> Some, carrying its full label set in criteria order and no order drop.
         let mut qs = laya::Questions::new();
         qs.insert("big".into(), choice(10));
         qs.insert("small".into(), choice(2));
-        let large = tournament_targets(&qs, 4).expect("a large choice");
+        let large = tournament_targets(&qs, 4).unwrap().expect("a large choice");
         assert_eq!(large.len(), 1);
         assert_eq!(large[0].0, "big");
         assert_eq!(large[0].1.len(), 10);
         assert_eq!(large[0].1[0], "opt0");
+        assert!(!large[0].2);
 
-        // A large choice carrying an option_order cannot be narrowed -> whole request one-pass.
+        // A large choice carrying an option_order cannot be narrowed while one pass still can read
+        // it (count within the cap) -> whole request one-pass.
         let mut big = choice(10);
         big.as_object_mut()
             .unwrap()
             .insert("option_order".into(), json!((0..10).collect::<Vec<_>>()));
         let mut qs = laya::Questions::new();
         qs.insert("big".into(), big);
-        assert!(tournament_targets(&qs, 4).is_none());
+        assert!(tournament_targets(&qs, 4).unwrap().is_none());
 
-        // A large array-criteria choice with a non-string label -> one-pass.
+        // A large array-criteria choice with a non-string label, within the cap -> one-pass.
         let mut qs = laya::Questions::new();
         qs.insert(
             "big".into(),
             json!({"type": "choice", "criteria": [1, 2, 3, 4, 5]}),
         );
-        assert!(tournament_targets(&qs, 4).is_none());
+        assert!(tournament_targets(&qs, 4).unwrap().is_none());
+    }
+
+    #[test]
+    fn tournament_targets_over_cap_must_narrow_and_drops_order() {
+        // A choice over MAX_CHOICE_OPTIONS is one only the raised cap admits and one pass was never
+        // asked to read, so the request must be narrowed even though it carries an option_order; the
+        // order is dropped and the drop is flagged.
+        let n = MAX_CHOICE_OPTIONS + 50;
+        let mut big = choice(n);
+        big.as_object_mut()
+            .unwrap()
+            .insert("option_order".into(), json!((0..n).collect::<Vec<_>>()));
+        let mut qs = laya::Questions::new();
+        qs.insert("big".into(), big);
+        let large = tournament_targets(&qs, 16).unwrap().expect("must narrow");
+        assert_eq!(large.len(), 1);
+        assert_eq!(large[0].0, "big");
+        assert_eq!(large[0].1.len(), n);
+        assert!(large[0].2, "option_order drop is flagged");
+    }
+
+    #[test]
+    fn tournament_targets_over_cap_with_non_string_label_is_refused() {
+        // Over the cap, every label must be a string so an eliminated option's probability can be
+        // keyed back onto it; a non-string label is refused (surfaced as 422), not one-passed.
+        let n = MAX_CHOICE_OPTIONS + 1;
+        let criteria: Vec<Value> = (0..n).map(|i| json!(i)).collect();
+        let mut qs = laya::Questions::new();
+        qs.insert(
+            "big".into(),
+            json!({"type": "choice", "criteria": criteria}),
+        );
+        let err = tournament_targets(&qs, 16).unwrap_err();
+        assert!(err.contains("big"));
+        assert!(err.contains("every label to be a string"));
     }
 
     #[test]
@@ -994,7 +1090,7 @@ mod tests {
             "tournament": {"big": {"labels": ["opt2", "opt5"], "n": 6, "rounds": 1}},
         });
         let labels: Vec<String> = (0..6).map(|i| format!("opt{i}")).collect();
-        let large = vec![("big".to_string(), labels)];
+        let large = vec![("big".to_string(), labels, false)];
         let out = project_tournament(result, &large, 123);
 
         let probs = out["answers"]["big"]["probabilities"].as_object().unwrap();
@@ -1012,6 +1108,10 @@ mod tests {
             json!(["opt2", "opt5"])
         );
         assert_eq!(out["answers"]["big"]["x_tournament"]["rounds"], json!(1));
+        // No option_order was dropped, so the marker is absent.
+        assert!(out["answers"]["big"]["x_tournament"]
+            .get("option_order_dropped")
+            .is_none());
         // input_tokens is the summed total; output_tokens stays the final call's; tournament gone.
         assert_eq!(out["usage"]["input_tokens"], json!(123));
         assert_eq!(out["usage"]["output_tokens"], json!(8));
@@ -1031,7 +1131,7 @@ mod tests {
             "usage": {"input_tokens": 20, "output_tokens": 4},
             "tournament": {"big": {"labels": ["opt0", "opt1"], "n": 2, "rounds": 0}},
         });
-        let large = vec![("big".to_string(), vec!["opt0".into(), "opt1".into()])];
+        let large = vec![("big".to_string(), vec!["opt0".into(), "opt1".into()], false)];
         let out = project_tournament(result, &large, 20);
         assert_eq!(
             out["answers"]["big"]["probabilities"]
@@ -1041,5 +1141,27 @@ mod tests {
             2
         );
         assert!(out["answers"]["big"].get("x_tournament").is_none());
+    }
+
+    #[test]
+    fn project_tournament_flags_a_dropped_option_order() {
+        // A choice forced through narrowing despite an `option_order` records the drop so a client
+        // reading `x_tournament` sees its order was not honoured (#1062).
+        let result = json!({
+            "model": "english",
+            "answers": {
+                "big": {"type": "choice", "choice": "opt2", "confidence": 0.8,
+                        "probabilities": {"opt2": 0.7, "opt5": 0.3}},
+            },
+            "usage": {"input_tokens": 40, "output_tokens": 8},
+            "tournament": {"big": {"labels": ["opt2", "opt5"], "n": 6, "rounds": 1}},
+        });
+        let labels: Vec<String> = (0..6).map(|i| format!("opt{i}")).collect();
+        let large = vec![("big".to_string(), labels, true)];
+        let out = project_tournament(result, &large, 99);
+        assert_eq!(
+            out["answers"]["big"]["x_tournament"]["option_order_dropped"],
+            json!(true)
+        );
     }
 }

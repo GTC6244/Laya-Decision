@@ -201,6 +201,7 @@ fn run(text: &str, cli: &Cli, router: &Router) -> i32 {
 
 fn interactive(cli: &Cli, router: &Router) -> i32 {
     println!("Laya interactive mode. Type a request and press Enter; Ctrl-D or 'quit' to exit.");
+    let mut code = 0;
     loop {
         print!("laya> ");
         let _ = io::stdout().flush();
@@ -216,9 +217,15 @@ fn interactive(cli: &Cli, router: &Router) -> i32 {
         if t.is_empty() || t.eq_ignore_ascii_case("quit") || t.eq_ignore_ascii_case("exit") {
             break;
         }
-        run(t, cli, router);
+        // A handled failure stays non-fatal to the session, but the process cannot then report
+        // success for a request it knows did not run: `laya < requests.txt` exited 0 with every
+        // answer missing and only stderr to say so. Keep the last non-zero code (upstream cli.py).
+        let rc = run(t, cli, router);
+        if rc != 0 {
+            code = rc;
+        }
     }
-    0
+    code
 }
 
 fn main() {

@@ -31,6 +31,7 @@ from .common import (
     collate_items,
     ece_score,
     temp_bucket,
+    temperature_rejected,
 )
 
 # Per-bucket floor. Below this, `temperature_by_options` omits the bucket.
@@ -39,6 +40,12 @@ MIN_BUCKET_N = 2000
 MIN_TYPE_N = 10
 # Fraction of each bucket held out when `compute_ece=True`. Unused otherwise.
 ECE_HOLDOUT_FRAC = 0.2
+# Log-space search margin, in e-folds, outside the `[TEMP_MIN, TEMP_MAX]` answer band.
+# The optimiser runs on log T with no bound of its own; any scale this far below
+# `TEMP_MIN` already clamps to `TEMP_MIN`, so the band costs no real minimum, while an
+# unbounded walk reaches `exp()` underflow (~-88 in float32), divides the objective by
+# zero, and hands `clamp_temperature` a NaN -- which it reports as the neutral 1.0.
+LOG_T_MARGIN = 10.0
 # Payload schema. Files written before identity was recorded have no version key;
 # readers treat that absence as version 1.
 CALIBRATION_VERSION = 2
@@ -85,17 +92,21 @@ def _validated_pair(logits, target, k=None):
     return logits, target, int(k)
 
 
-def _pairs_to_tensors(pairs: Sequence) -> Tuple[torch.Tensor, torch.Tensor]:
-    kmax = max(len(_vec(z)) for z, _ in pairs)
-    z_mat = torch.full((len(pairs), kmax), -1e4)
-    t_mat = torch.zeros((len(pairs), kmax))
-    for i, (z, t) in enumerate(pairs):
-        z = _vec(z)
-        t = _vec(t)
-        n = len(z)
-        z_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(z[:n]))
-        t_mat[i, :n] = torch.from_numpy(np.ascontiguousarray(t[:n]))
-    return z_mat, t_mat
+def _pairs_by_width(pairs: Sequence) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+    """One (logits, target) matrix per distinct option count, narrowest first.
+
+    A ragged pool -- a question type holding 2-option and 12-option decisions -- cannot be
+    one matrix. Any value used to square off the short rows is a real column in the single
+    softmax every row then goes through, so it competes for the probability mass the fit is
+    trying to allocate; at `-1e4` it wins the row it pads once the row's own logits drop
+    below it, and it overflows to `inf`/`NaN` in float32 when the scale gets small. Grouping
+    keeps each row inside its own option count, which is what the objective means.
+    """
+    groups: Dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {}
+    for z, t in pairs:
+        groups.setdefault(len(_vec(z)), []).append((_vec(z), _vec(t)))
+    return [(torch.from_numpy(np.stack([z for z, _ in groups[w]])),
+             torch.from_numpy(np.stack([t for _t, t in groups[w]]))) for w in sorted(groups)]
 
 
 def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
@@ -103,6 +114,10 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
 
     The result is `clamp_temperature` of the optimised scale, so it lies in
     `[TEMP_MIN, TEMP_MAX]` (or is the neutral 1.0 when the value is not a number).
+    The search is bounded to `LOG_T_MARGIN` e-folds outside that band, which covers any
+    minimum the answer can use; past it the float32 scale drifts toward `exp()` underflow,
+    where the objective divides by zero and every gradient becomes NaN, and
+    `clamp_temperature` reads that NaN back as the neutral 1.0.
     Returns 1.0 when fewer than `min_n` pairs are given. `min_n` defaults to
     `MIN_BUCKET_N` (the per-bucket floor). Type-level fits pass `MIN_TYPE_N`, which
     is lower, so a dataset that fills no bucket still gets a scalar instead of
@@ -122,19 +137,25 @@ def fit_one_temperature(pairs: Sequence, min_n: Optional[int] = None) -> float:
         sel.append((z, t))
     if len(sel) < min_n:
         return 1.0
-    z_mat, t_mat = _pairs_to_tensors(sel)
+    groups = _pairs_by_width(sel)
+    n_rows = float(len(sel))
+    log_lo = float(np.log(TEMP_MIN)) - LOG_T_MARGIN
+    log_hi = float(np.log(TEMP_MAX)) + LOG_T_MARGIN
     with torch.enable_grad():
         log_t = torch.zeros(1, requires_grad=True)
         opt = torch.optim.LBFGS([log_t], lr=0.1, max_iter=100)
 
         def closure():
             opt.zero_grad()
-            loss = -(t_mat * torch.log_softmax(z_mat / log_t.exp(), -1)).sum(-1).mean()
+            scale = log_t.clamp(min=log_lo, max=log_hi).exp()
+            nll = sum(-(t * torch.log_softmax(z / scale, -1)).sum(-1).sum()
+                      for z, t in groups)
+            loss = nll / n_rows
             loss.backward()
             return loss
 
         opt.step(closure)
-    fitted = float(log_t.detach().exp().item())
+    fitted = float(log_t.detach().clamp(min=log_lo, max=log_hi).exp().item())
     return clamp_temperature(fitted, TEMP_MIN, TEMP_MAX)
 
 
@@ -299,8 +320,12 @@ fit_temperatures = fit_temperature_map
 
 # Per-bucket floor for abstention thresholds. Lower than `MIN_BUCKET_N` (which governs temperature
 # fitting): a threshold is a single order statistic of the calibrated confidences, so it stabilises
-# on far fewer examples than an LBFGS temperature does. Buckets below this are omitted; the caller's
-# scalar `min_confidence` (or the map's "default") covers them.
+# on far fewer examples than an LBFGS temperature does. Buckets below this are omitted, and only the
+# map's own "default" entry covers them afterwards -- `resolve_min_confidence` falls from "default"
+# to 0.0, which gates nothing. There is no scalar behind that fall-through, unlike a temperature
+# bucket omitted from `temperature_by_options`, whose type-level scalar really is the fallback: one
+# call's `min_confidence` is either a float or a map, never both, so no caller's float is in scope
+# here. A map produced with this floor should name a "default" if any bucket under it must abstain.
 MIN_ABSTAIN_BUCKET_N = 100
 
 
@@ -341,7 +366,7 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
                               target_error: float = 0.10,
                               min_bucket_n: int = MIN_ABSTAIN_BUCKET_N,
                               conservative: bool = True) -> Dict[str, float]:
-    """Fit a per-`temp_bucket` abstention threshold so a gate keeps a target error in every bucket.
+    """Fit a per-`temp_bucket` abstention threshold so a gate keeps a target error in each fitted bucket.
 
     A single `min_confidence` does not transfer across option counts (#394): the calibrated
     confidence of a 2-option and a 12-option answer live on different scales, so one cut over- or
@@ -359,9 +384,11 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
     scaled by the fitted `temperature` / `temperature_by_options` first, so thresholds and the
     numbers the runtime reports are on the same scale. `target_error` is the tolerated error among
     accepted answers; `min_bucket_n` omits buckets too small to fit, and `conservative` adds a
-    one-sample margin. The thresholds are empirical cuts on the calibration set, not a formal
-    coverage guarantee -- validate on held-out data (`fit_temperature_map(..., compute_ece=True)`
-    gives a held-out split) for a production gate.
+    one-sample margin. An omitted bucket is not caught by a fallback: the map lookup falls to its own
+    ``"default"`` entry and then to 0.0, which gates nothing, so a `min_bucket_n` that excludes a
+    bucket leaves that bucket ungated unless the map names a ``"default"``. The thresholds are
+    empirical cuts on the calibration set, not a formal coverage guarantee -- validate on held-out
+    data (`fit_temperature_map(..., compute_ece=True)` gives a held-out split) for a production gate.
 
     Pass `binning_map` when the agent that will serve these thresholds has one installed -- by
     `Agent.fit_binning`, or by a calibration payload that carries `binning_map` -- because the
@@ -573,11 +600,8 @@ def _rejected_temperatures(entries):
     """Names whose raw value is not the number `clamp_temperature` kept, matching checkpoint load."""
     rejected = []
     for name, raw, applied in entries:
-        try:
-            if float(raw) == applied:
-                continue
-        except (TypeError, ValueError):
-            pass
+        if not temperature_rejected(raw, applied):
+            continue
         rejected.append("%s=%r -> %g" % (name, raw, applied))
     return rejected
 
@@ -649,6 +673,13 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
     if version is None:
         version = 1
     if isinstance(version, bool) or not isinstance(version, (int, float, str)):
+        raise ValueError("calibration JSON version must be an integer, got %r" % (version,))
+    if isinstance(version, float) and not version.is_integer():
+        # `int()` truncates, and the truncation is not cosmetic: a file whose `version` is 1.9
+        # became 1, which is below CALIBRATION_VERSION, so the identity check at the foot of this
+        # function never ran and a map fitted for another checkpoint loaded silently. The string
+        # form of the same mistake already raises below; a whole number written as `2.0` is an
+        # integer and still loads.
         raise ValueError("calibration JSON version must be an integer, got %r" % (version,))
     try:
         version = int(version)
