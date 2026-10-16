@@ -3,6 +3,70 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.11 — tracks upstream Laya 0.4.8 (upstream @4ac226d)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @147a639, 0.4.7) across
+the single 0.4.8 release. The 75-commit span is overwhelmingly the new `laya-go` binding (a whole
+`laya-go/agent`, `laya-go/onnx` and `laya-go/infer` tree) plus Java/CI/docs/packaging work and
+modules this port does not carry (`calibrate`, `evals`, `evals_cli`, `evidence`, `mcp`,
+`onnx_agent`, `revisions`). Three changes reach the carried surface and are ported; the rest have no
+code site on the Rust surface and are listed below.
+
+### Fixed
+- **`jev_confidence` now refuses a negative probability instead of normalising it into range
+  (upstream `confidence.py`).** The two Jev formulas normalise by the sum of the probabilities, so a
+  mixed-sign document could divide by a near-zero or negative total and return a number outside
+  `[0, 1]` — for a distribution whose argmax is not the one the formula measured — while an
+  all-negative document divided back into range and returned exactly what its positive counterpart
+  would. A malformed document — a probability that does not read as a number, a boolean, a
+  non-finite **or now a negative value** — gives `None`, so a caller filtering on
+  `x_jev_confidence` never filters on a made-up one and every number this returns lies in `[0, 1]`
+  ([`laya::common::jev_confidence`], served through `laya-serve`'s `add_jev_confidence`).
+- **`laya-serve` reads a blank `LAYA_PORT` as the documented default instead of exiting (upstream
+  `serve._resolve_port`).** `LAYA_PORT=` — what a `.env` line or Compose `KEY=` left for the operator
+  to fill in writes — trimmed to the empty string, failed the integer parse and exited `2` with an
+  "invalid LAYA_PORT" message. Unset and blank now both bind `8000`; a value that names a number and
+  the wrong one (`0`, `99999`, `abc`) still exits loudly, because binding a server somewhere its
+  operator did not ask for cannot be contradicted by falling back.
+- **`laya-serve` reads a blank `LAYA_*` boolean and a blank `LAYA_LOG_LEVEL` as "not specified"
+  (upstream `serve._env_bool` and the new `serve._resolve_log_level`).** A declared-but-unfilled
+  `LAYA_PRELOAD=` or `LAYA_JEV_STRICT=` / `LAYA_AUTO_TASK=` trimmed to the empty string, missed the
+  four on-spellings and silently read as *off* — now it keeps the switch's documented default. A
+  blank `LAYA_LOG_LEVEL=` likewise takes the default `info` rather than installing an empty tracing
+  filter. (The upstream helper's uvicorn-`LOG_LEVELS` validation is Python-specific: this port logs
+  through `tracing_subscriber`'s `EnvFilter`, which accepts richer directives than uvicorn's five
+  level names and already falls back to `info` on an unparseable value, so only the blank-means-
+  default half of the change has a landing site here.)
+
+### Unported upstream changes
+
+The rest of the carried-surface churn has no landing site on this port and is deliberately skipped:
+
+- **`agent._encode_state` reading `n_opts` from the encoder's `stats["options"]` instead of
+  re-calling `render_options(q)`** (upstream `agent.py`): a performance/cleanliness change with no
+  behavioural effect — the two counts are equal. The Rust marker guard
+  (`markers.len() != render_options(q)?.len()`) already compares against the true option count, and
+  `render_options` is cheap, so there is nothing to correct.
+- **`common.ece_score` refusing a `bins` that is not an integer ≥ 1** (upstream `common.py`): Expected
+  Calibration Error is part of the uncarried `calibrate`/`evals` surface; the Rust port has no
+  `ece_score`.
+- **`structured._enum_field` rejecting a non-array `enum` and treating a boolean enum as `noul` only
+  when it has exactly two distinct values** (upstream `structured.py`): the `structured` `decide()` /
+  `decide_batch()` schema API is not carried by this port (no `structured` module on the Rust
+  surface).
+- **Docstring-only edits in `email.clean_email_body` / `email.email_state`** (upstream `email.py`,
+  the `budget-zero` / `budget-negative` behaviour) — the Rust `clean_email_body` already slices by
+  the same budget and is covered by the `email_parity` golden vectors, which are unchanged.
+- Changes confined to the uncarried `calibrate`, `evals`, `evals_cli`, `mcp.server`, `onnx_agent`
+  and `revisions` modules, and to the `laya-go` / `laya-java` / `sdk/typescript` bindings, docs and
+  packaging.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.10: language detection, routing
+and email cleaning did not move between 0.4.7 and 0.4.8 (`lang`, `email`, `presets`, `router` and
+`structured` have no carried behavioural diff, and the `confidence` change only *rejects* an input
+the golden vectors never carry). Vendored `reference/` snapshots synced to upstream @4ac226d, and
+`UPSTREAM_VERSION` now reads `0.4.8`.
+
 ## 0.2.10 — tracks upstream Laya 0.4.7 (upstream @147a639)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @682ac67, 0.4.4) across

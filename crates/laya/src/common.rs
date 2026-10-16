@@ -406,8 +406,12 @@ pub fn confidence_from_probs(p: &[f64], k: usize) -> f64 {
 ///
 /// Both are `1.0` for a single option, and a zero total is read as uniform. A `noul` answer has no
 /// Jev confidence, and malformed probabilities (missing, empty, non-numeric, boolean, non-finite,
-/// or — for `score` — a non-integer level key) give `None` rather than a guess, so a caller
-/// filtering on this number never filters on a made-up one.
+/// negative, or — for `score` — a non-integer level key) give `None` rather than a guess, so a
+/// caller filtering on this number never filters on a made-up one. Negatives are refused because
+/// the formulas normalise by the sum: a mixed-sign document can divide by a near-zero or negative
+/// total and return a number outside `[0, 1]` for a distribution whose argmax is not the one it
+/// measured. Refusing them makes the range a property — every number this returns lies in `[0, 1]`
+/// (upstream `confidence.py::jev_confidence`).
 pub fn jev_confidence(answer: &Value) -> Option<f64> {
     let kind = answer.get("type").and_then(|v| v.as_str())?;
     let probs = answer.get("probabilities").and_then(|v| v.as_object())?;
@@ -432,7 +436,7 @@ pub fn jev_confidence(answer: &Value) -> Option<f64> {
     } else {
         probs.values().map(|v| v.as_f64()).collect::<Option<_>>()?
     };
-    if !p.iter().all(|v| v.is_finite()) {
+    if !p.iter().all(|v| v.is_finite() && *v >= 0.0) {
         return None;
     }
     let n = p.len();
@@ -862,6 +866,10 @@ mod tests {
             json!({ "type": "choice", "probabilities": { "o0": 0.5, "o1": "high" } }),
             json!({ "type": "choice", "probabilities": { "o0": true, "o1": false } }),
             json!({ "type": "score", "probabilities": { "low": 0.5, "high": 0.5 } }),
+            // A negative probability is refused rather than normalised into range
+            // (upstream 0.4.8 `confidence.py`).
+            json!({ "type": "choice", "probabilities": { "o0": 1.5, "o1": -0.5 } }),
+            json!({ "type": "score", "probabilities": { "0": 0.5, "1": -0.1, "2": 0.6 } }),
         ];
         for answer in none_cases {
             assert_eq!(jev_confidence(&answer), None, "answer {answer:?}");
