@@ -99,21 +99,26 @@ def _parse_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, float]:
             number = float(raw)
         except ValueError:
             raise EvalError("%r is not a number in %r" % (raw, pair))
-        # float() accepts "nan", and a NaN limit or tolerance would disable the gate it names.
-        if math.isnan(number):
+        # A non-finite limit or tolerance disables the gate it names rather than tightening it:
+        # `--max ece=inf` and `--min accuracy=-inf` pass every measurement, and
+        # `--tolerance METRIC=inf` makes `compare` accept a drift of any size and still exit 0 --
+        # the code that means "the gate ran and the numbers passed". `nan` was refused for this
+        # exact reason; `inf` reaches the same gate by a route `nan` has no equivalent of, because
+        # `float("1e999")` overflows to `inf` and raises nothing.
+        if not math.isfinite(number):
             raise EvalError("%r is not a number in %r" % (raw, pair))
         out[name.strip()] = number
     return out
 
 
 def _limit(raw: str) -> float:
-    """argparse `type=` for `--min-accuracy` and `--max-ece`: refuse "nan" as `_parse_pairs` does."""
+    """argparse `type=` for `--min-accuracy` and `--max-ece`: refuse a non-finite number."""
     try:
         number = float(raw)
     except ValueError:
         raise argparse.ArgumentTypeError("%r is not a number" % raw)
-    # float() accepts "nan", and a NaN limit would disable the gate it names.
-    if math.isnan(number):
+    # Same gate as `_parse_pairs`: a non-finite limit decides nothing.
+    if not math.isfinite(number):
         raise argparse.ArgumentTypeError("%r is not a number" % raw)
     return number
 
@@ -257,8 +262,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _load_report(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    # `main`'s usage-error handler promises that "an unreadable report" exits 2, and four report
+    # reads route through here. Only one shape of unreadable kept that promise: a missing path
+    # raised FileNotFoundError and landed in the handler, while a path that is a directory or on an
+    # unreadable volume, a file that is not valid JSON, and a file that is valid JSON but not an
+    # object each escaped as a traceback and exit 1 -- the code this CLI reserves for "a threshold
+    # or a baseline tolerance failed". A CI job cannot tell those apart, which is the one
+    # distinction the exit codes exist to draw. `laya-evals agreement` has always read its three
+    # runs this way; this makes the shared report loader satisfy the same contract.
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError, RecursionError) as exc:
+        raise EvalError("cannot read report %r: %s" % (path, exc)) from exc
+    if not isinstance(document, dict):
+        raise EvalError("cannot read report %r: expected a JSON object, found %s"
+                        % (path, type(document).__name__))
+    return document
 
 
 def _check_thresholds(overall: Dict[str, float], mins: Dict[str, float],
@@ -489,7 +509,15 @@ def _cmd_run(args) -> int:
 def _cmd_evidence(args) -> int:
     try:
         result = evidence.inspect_checkpoint(args.checkpoint, args.report)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
+        # `FileNotFoundError` alone covered a missing path only. A `--report` that is a directory,
+        # or a checkpoint config the process may not read, raised an OSError subclass that walked
+        # out of `main` and left a traceback with exit 1 -- the code this CLI keeps for a quality
+        # failure -- next to the same mistake on a missing path, which exited 2. Both are caller
+        # mistakes about a named path, and the errno text names it. Nothing here reaches the Hub:
+        # `laya/evidence.py` imports `json` and `os` only, so there is no failed download to
+        # mistake for a usage error, which is why this handler is allowed to be wider than the
+        # `FileNotFoundError` one in `main`.
         print("laya-evals: %s" % exc, file=sys.stderr)
         return 2
     print(evidence.format_summary(result))

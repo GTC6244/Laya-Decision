@@ -337,13 +337,22 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// A `LAYA_*` switch. Unset *or blank* means `default`; only the four spellings turn it on. Blank is
+/// read as "not specified" — what a `.env` line or a Compose `KEY=` left for the operator to fill in
+/// writes — so `LAYA_PRELOAD=` keeps the documented default rather than silently reading as off
+/// (upstream 0.4.8 `serve._env_bool`).
 fn env_bool(name: &str, default: bool) -> bool {
-    match std::env::var(name) {
-        Ok(v) => matches!(
-            v.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
+    parse_env_bool(std::env::var(name).ok().as_deref(), default)
+}
+
+/// The pure core of [`env_bool`]. Unset (`None`) or blank is `default`; only the four spellings
+/// (case-insensitive, surrounding whitespace ignored) turn it on.
+fn parse_env_bool(raw: Option<&str>, default: bool) -> bool {
+    match raw.map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            matches!(s.to_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        }
+        _ => default,
     }
 }
 
@@ -368,14 +377,31 @@ fn parse_tournament_group(raw: Option<&str>) -> usize {
 }
 
 /// Port from `LAYA_PORT`, validated. Exits with a message instead of silently falling back.
+///
+/// Unset and blank both mean the documented default `8000`: `LAYA_PORT=` is what a `.env` line left
+/// for the operator to fill in reads as, and a value carrying no number cannot be contradicted by
+/// falling back — unlike `LAYA_PORT=99999`, where answering `8000` would bind somewhere the operator
+/// did not ask for, so that still exits loudly (upstream 0.4.8 `serve._resolve_port`).
 fn resolve_port() -> u16 {
-    let raw = std::env::var("LAYA_PORT").unwrap_or_else(|_| "8000".to_string());
-    match raw.trim().parse::<u32>() {
-        Ok(p) if (1..=65535).contains(&p) => p as u16,
-        _ => {
+    match parse_port(std::env::var("LAYA_PORT").ok().as_deref()) {
+        Ok(p) => p,
+        Err(raw) => {
             eprintln!("laya-serve: invalid LAYA_PORT {raw:?}: must be an integer 1-65535");
             std::process::exit(2);
         }
+    }
+}
+
+/// The pure core of [`resolve_port`]. Unset (`None`) or blank is the default `8000`; a value that
+/// carries a number out of `1..=65535` (or no number at all) is an error carrying the raw string so
+/// the caller can name it.
+fn parse_port(raw: Option<&str>) -> Result<u16, String> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(8000),
+        Some(s) => match s.parse::<u32>() {
+            Ok(p) if (1..=65535).contains(&p) => Ok(p as u16),
+            _ => Err(s.to_string()),
+        },
     }
 }
 
@@ -839,12 +865,14 @@ fn err(code: StatusCode, detail: &str) -> (StatusCode, Json<Value>) {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("LAYA_LOG_LEVEL")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Unset or blank means the documented default `info`, matching the rest of the `LAYA_*` family
+    // (upstream 0.4.8 reads a blank `LAYA_LOG_LEVEL` as "not specified" in `serve._resolve_log_level`).
+    let log_filter = match std::env::var("LAYA_LOG_LEVEL") {
+        Ok(v) if !v.trim().is_empty() => tracing_subscriber::EnvFilter::try_new(v.trim())
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        _ => tracing_subscriber::EnvFilter::new("info"),
+    };
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let device = std::env::var("LAYA_DEVICE")
         .ok()
@@ -994,6 +1022,39 @@ mod tests {
             parse_tournament_group(Some(&MAX_CHOICE_OPTIONS.to_string())),
             MAX_CHOICE_OPTIONS
         );
+    }
+
+    #[test]
+    fn parse_env_bool_reads_blank_as_default() {
+        // Unset and blank both take the default (upstream 0.4.8 `_env_bool`).
+        assert!(parse_env_bool(None, true));
+        assert!(!parse_env_bool(None, false));
+        assert!(parse_env_bool(Some(""), true));
+        assert!(parse_env_bool(Some("   "), true));
+        assert!(!parse_env_bool(Some(""), false));
+        // Only the four spellings turn it on; case and surrounding whitespace don't matter.
+        for on in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(parse_env_bool(Some(on), false), "{on:?} should be on");
+        }
+        for off in ["0", "false", "no", "off", "nope"] {
+            assert!(!parse_env_bool(Some(off), true), "{off:?} should be off");
+        }
+    }
+
+    #[test]
+    fn parse_port_reads_blank_as_default() {
+        // Unset and blank both mean the documented default (upstream 0.4.8 `_resolve_port`).
+        assert_eq!(parse_port(None), Ok(8000));
+        assert_eq!(parse_port(Some("")), Ok(8000));
+        assert_eq!(parse_port(Some("   ")), Ok(8000));
+        // A real number in range is honoured; surrounding whitespace is ignored.
+        assert_eq!(parse_port(Some("9000")), Ok(9000));
+        assert_eq!(parse_port(Some(" 1 ")), Ok(1));
+        assert_eq!(parse_port(Some("65535")), Ok(65535));
+        // A number that names the wrong value, or no number at all, is an error carrying the raw.
+        assert_eq!(parse_port(Some("0")), Err("0".to_string()));
+        assert_eq!(parse_port(Some("99999")), Err("99999".to_string()));
+        assert_eq!(parse_port(Some("abc")), Err("abc".to_string()));
     }
 
     fn choice(options: usize) -> Value {
