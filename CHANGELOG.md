@@ -3,6 +3,48 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.12 — tracks upstream Laya 0.4.9 (upstream @ca5045a)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @4ac226d, 0.4.8) across
+the single 0.4.9 release. The 85-commit span is again dominated by the `laya-go` binding (hooks,
+the confidence gate, per-language temperatures and checkpoint-digest verification) plus Java/.NET,
+CI, docs and packaging work, and by modules this port does not carry (`calibrate`, `evals`,
+`evals_cli`, `evidence`, `mcp`, the `_agreement` eval-fingerprint helper and the `backends/compile`
+torch-inductor cache). **No change in this span reaches the carried Rust surface, so no port lands
+and the golden parity fixtures are untouched.** This is a tracking release: it refreshes the
+vendored upstream snapshot to 0.4.9 and bumps `UPSTREAM_VERSION`, keeping the published crate aligned
+with the upstream release it mirrors.
+
+### Unported upstream changes
+
+The three carried-adjacent `laya/` files that moved all land on surface this port does not carry:
+
+- **`router.predict_batch` now memoizes the question-schema serialization across consecutive
+  contexts that share the same `questions` object, and spells the empty-override case as `{}`
+  directly** (upstream `router.py`, "perf(router): memoize question schema serialization in
+  predict_batch"). Both halves are performance/clarity only — the `overrides` dict-comprehension
+  already produced `{}` when both token budgets were unset, and the memoization is a Python
+  object-identity cache. This port's `Router` has no batched `predict_batch` grouping path (routing
+  resolves one request to one model; token-budget overrides are an agent-level `predict` concern),
+  so there is no code site for either edit.
+- **`agent._cpu_amp_dtype` gained a docstring paragraph explaining that a host without native BF16
+  instructions dies with a native `SIGILL` / `0xC000001D` fault that the autocast `RuntimeError`
+  retry cannot catch** (upstream `agent.py`). Documentation only, and specific to torch's CPU
+  autocast path; this port runs inference through candle with no autocast retry, so the warning has
+  no landing site.
+- **`_agreement._json` now matches JSON containers by `isinstance` (so a `dict`/`list` subclass such
+  as `OrderedDict` validates as the mapping it encodes to) while keeping exact-type matching for
+  scalars** (upstream `_agreement.py`). The `_agreement` module backs the uncarried `evals` /
+  `calibrate` fingerprinting surface and is not vendored or ported here.
+
+Beyond those, the span is confined to the uncarried `calibrate`, `evals`, `evals_cli`, `evidence`,
+`mcp.device`/`mcp.server` and `backends.compile` modules, and to the `laya-go` / `laya-java` /
+`laya-dotnet` / `sdk` bindings, docs, CI and packaging.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.11: language detection, routing,
+email cleaning, confidence and the served surface did not move between 0.4.8 and 0.4.9. Vendored
+`reference/` snapshots synced to upstream @ca5045a, and `UPSTREAM_VERSION` now reads `0.4.9`.
+
 ## 0.2.11 — tracks upstream Laya 0.4.8 (upstream @4ac226d)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @147a639, 0.4.7) across
