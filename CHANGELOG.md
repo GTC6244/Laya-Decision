@@ -3,6 +3,65 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.13 — tracks upstream Laya 0.4.11 (upstream @d74e8be)
+
+Reviews the upstream `laya/` and `laya-ts/` changes made after the previous sync (upstream
+@ca5045a, 0.4.9) across the 0.4.10 and 0.4.11 releases. The 92-commit span is dominated by a brand
+new, independent upstream `laya-rust/` SDK (a separate crate — not this port, which upstream does
+not vendor or depend on), the TypeScript SDK catching up to Python with `decideBatch` /
+`answerConfidence`, two new integration wrappers (Agno team routing and a `LayaToolSelector`), the
+ONNX-export test/tooling overhaul, and modules this port does not carry (`calibrate`, `evals`,
+`hooks`, `mcp`, the structured `decide`/`decide_batch` schema layer). **No change in this span
+reaches the carried Rust surface, so no port lands and the golden parity fixtures are untouched.**
+This is a tracking release: it refreshes the vendored upstream snapshot to 0.4.11 and bumps
+`UPSTREAM_VERSION`, keeping the published crate aligned with the upstream release it mirrors.
+
+### Unported upstream changes
+
+The carried-adjacent `laya/` and `laya-ts/` files that moved all land on surface this port does not
+carry:
+
+- **`calibrate.fit_temperature_map` now reports a `temperature_clamped` map** naming every fit the
+  `[TEMP_MIN, TEMP_MAX]` clamp moved, carrying the unclamped optimum beside the installed value
+  (upstream `calibrate.py`, "fix(calibrate): report a temperature fit the clamp moved"). This is the
+  calibration *fitter* — an LBFGS/NLL training-time routine. This port carries only calibration
+  *application* (the `clamp_temperature` guard at checkpoint load); it has no temperature fitter, so
+  there is no landing site, and `clamp_temperature`'s own behaviour is unchanged.
+- **`onnx_agent` collates encoded rows directly into NumPy arrays** via a new `_collate_items_numpy`
+  helper, replacing the old `collate_items` (torch) + `.numpy()` conversion path (upstream
+  `onnx_agent.py`, "perf(onnx): collate question rows directly into numpy arrays"). It is a
+  performance refactor producing byte-identical arrays — same pad id, same attention mask, same
+  floor of ≥2 marker columns that the exported `topk(2)` head needs — and this port's Rust
+  `collate_items` already pads to that floor. The same change adds `model_id_or_path` / `subfolder`
+  attributes so the v2 calibration-payload identity check can match; that check backs the uncarried
+  calibration-fingerprint surface.
+- **`hooks.validate_timeout` now refuses a bool `hooks_timeout`** rather than reading `True` as
+  `1.0` (upstream `hooks.py`). This port carries no hooks surface, so there is no code site.
+- **The TypeScript SDK gained `Agent.decideBatch` / `Router.decideBatch` and a
+  `DecisionResult.answerConfidence` field** (upstream `laya-ts/src/{agent,router,structured,index}.ts`
+  with new coverage in `tests/{agent,router-batch,structured}.test.ts`). These port the Python
+  `decide_batch` schema API and expose the per-field `answer_confidence` through the structured
+  layer. This port carries no `structured` module (the `decide`/`decide_batch` schema API is not
+  carried) and no `predictBatch`/`routeBatch` grouping path; the underlying `answer_confidence` is
+  already carried as `laya::answer_confidence`, so nothing new lands.
+- **The integration wrappers moved**: `integrations/_controls` and the LangChain / CrewAI /
+  LlamaIndex nodes now forward the two Router-only routing hints (`task`, `lang_guess`), and two new
+  wrappers arrived — `integrations/agno.py` (Agno multi-agent team routing) and
+  `integrations/tools.py` (`LayaToolSelector` for sub-35 ms tool/function routing). These are
+  user-facing integration wrappers with no Rust analogue.
+- **`mcp/server` and `mcp/tools` added a `laya_predict_long` tool** (and gated `task`/`lang` on the
+  predict-long path) for states past the context window. MCP is not carried.
+
+Beyond those, the span is confined to the uncarried `evals` module, the independent upstream
+`laya-rust/` SDK, the ONNX-export scripts/tests, the `laya-go` / `laya-java` / `laya-dotnet`
+bindings, example launchers, docs, CI and packaging.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.12: language detection, routing,
+email cleaning, confidence and the served surface did not move between 0.4.9 and 0.4.11. Vendored
+`reference/` snapshots synced to upstream @d74e8be — the new `integrations/agno.py` and
+`integrations/tools.py` are vendored alongside the other integration wrappers, and the TypeScript
+`src`/`tests` snapshots are refreshed. `UPSTREAM_VERSION` now reads `0.4.11`.
+
 ## 0.2.12 — tracks upstream Laya 0.4.9 (upstream @ca5045a)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @4ac226d, 0.4.8) across
