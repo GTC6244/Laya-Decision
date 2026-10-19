@@ -3,6 +3,45 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.13 — tracks upstream Laya 0.4.11 (upstream @d74e8be)
+
+Reviews the upstream `laya/` changes made after the previous sync (upstream @ca5045a, 0.4.9) across
+the 0.4.10 and 0.4.11 releases. The 92-commit span is dominated by work this port does not carry: a
+new `agno` integration (`laya/integrations/agno.py`) and a tool-selection integration
+(`laya/integrations/tools.py`), the `crewai` / `langchain` / `llamaindex` wrappers and their shared
+`_controls`, the `mcp` server/tools, the `calibrate` and `evals` modules, `hooks`, the torch-only
+`onnx_agent`, plus the whole new upstream `laya-rust/` tree (upstream's own separate Rust port),
+docs, examples, CI and packaging. **No change in this span reaches the carried Rust surface, so no
+port lands and the golden parity fixtures are untouched.** This is a tracking release: it refreshes
+the vendored upstream snapshot to 0.4.11 and bumps `UPSTREAM_VERSION`, keeping the published crate
+aligned with the upstream release it mirrors.
+
+### Unported upstream changes
+
+The carried-adjacent files that moved all land on surface this port does not carry:
+
+- **`onnx_agent.py` replaced its `collate_items` + `np.pad` step with a dedicated
+  `_collate_items_numpy` helper that allocates at least two marker columns directly, and gained
+  `model_id_or_path` / `subfolder` attributes plus a `load_calibration` docstring** (upstream
+  `onnx_agent.py`). The marker-pad-to-two semantics and the decode are unchanged — they already
+  match this port's `model.rs` / `agent.rs` — and the change is specific to the ONNX Runtime path
+  and the `calibrate` save/load surface, neither of which this candle-backed port carries.
+- **`calibrate.py` now reports a clamp that moved a fit via `temperature_clamped` and split
+  `fit_one_temperature` into a raw `_fit_unclamped_temperature` plus the clamped wrapper** (upstream
+  `calibrate.py`). The `calibrate` module is not vendored or ported here.
+- **The TypeScript reference added `Agent.decideBatch` / `Router.decideBatch` and the supporting
+  `decideBatch` export** (upstream `laya-ts/src/{agent,router,index,structured}.ts`). These sit on
+  the structured-output `decide` surface (`structured.ts` / `structured.py`), which this port does
+  not carry.
+
+Beyond those, the span is confined to the uncarried `agno` / `tools` / `crewai` / `langchain` /
+`llamaindex` integrations, `mcp`, `calibrate`, `evals`, `hooks`, the upstream `laya-rust/` tree, and
+docs/CI/packaging.
+
+The golden parity fixtures are **byte-for-byte identical** to 0.2.12: language detection, routing,
+email cleaning, confidence and the served surface did not move between 0.4.9 and 0.4.11. Vendored
+`reference/` snapshots synced to upstream @d74e8be, and `UPSTREAM_VERSION` now reads `0.4.11`.
+
 ## 0.2.12 — tracks upstream Laya 0.4.9 (upstream @ca5045a)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @4ac226d, 0.4.8) across
