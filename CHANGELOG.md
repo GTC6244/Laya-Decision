@@ -3,6 +3,39 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.14 — tracks upstream Laya 0.4.12 (upstream @ffc1420)
+
+Reviews the 22-commit upstream span 0.4.11 (@d74e8be) -> 0.4.12 (@ffc1420). The only change that
+touches a file this port carries is a behaviour-preserving performance refactor of
+`common.collate_items`; everything else lands on surface this port does not carry (hooks, the ONNX
+Runtime agent, the .NET port, laya-ts packaging, docs, CI and assets). **No change reaches the
+carried Rust surface, so no port lands and the golden parity fixtures are byte-for-byte identical to
+0.2.13.** This is a tracking release: it refreshes the vendored upstream snapshot to 0.4.12 and
+bumps `UPSTREAM_VERSION`, keeping the published crate aligned with the upstream release it mirrors.
+
+### Unported upstream changes
+
+- **`common.collate_items` now builds its batch arrays directly in NumPy and wraps them with
+  `torch.from_numpy` at the end, instead of allocating `torch` tensors up front and assigning into
+  them** (upstream `common.py`, "perf(common): collate question rows directly into numpy arrays").
+  The output shapes, dtypes (`int64` ids/positions/qtype/label, `bool` marker mask, `float32`
+  target), values and the per-item over-long-`target` `ValueError` guard are all unchanged — it is a
+  pure allocation-path optimisation on the torch inference backend. This port's `common.rs`
+  `collate` already produces the identical logical batch, so nothing changes here.
+- **`onnx_agent.predict_batch` gained the `@_reuse_question_tokens` decorator** so it reuses
+  question token encodings across states in a batch (upstream `onnx_agent.py`, "perf(onnx): reuse
+  question tokens across states in predict_batch"). `_reuse_question_tokens` already existed in the
+  vendored 0.4.11 `common.py`; this only wires it onto the ONNX Runtime agent, a path this
+  candle-backed port does not carry. The underlying per-state encode/collate semantics are
+  unchanged.
+- **A new `OptionStabilityHook` was added to `hooks.py` (and exported from `__init__.py`)** providing
+  a metamorphic option-stability reliability signal (upstream `hooks.py`). The hooks system is not
+  carried by this port.
+
+Beyond those, the span is confined to the uncarried .NET port (`laya-dotnet/`, including its new
+`PredictLong` surface and golden suite), `laya-ts` packaging, the logo assets, `nix/` packaging,
+docs and CI.
+
 ## 0.2.13 — tracks upstream Laya 0.4.11 (upstream @d74e8be)
 
 Reviews the upstream `laya/` changes made after the previous sync (upstream @ca5045a, 0.4.9) across

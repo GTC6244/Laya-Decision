@@ -22,7 +22,7 @@ import os as _os
 _os.environ.setdefault("USE_TF", "0")
 
 from .email import clean_email_body, email_state
-from .hooks import AsyncHook, BaseHook, Hook, PredictContext, PredictHook
+from .hooks import AsyncHook, BaseHook, Hook, OptionStabilityHook, PredictContext, PredictHook
 from .lang import analyse as detect_language
 from .lang import detect_script, is_english
 from .presets import (
@@ -35,7 +35,7 @@ from .presets import (
 from .router import DEFAULT_MODELS, RouteDecision, Router
 from .structured import DecisionResult, decide, decide_batch
 
-__version__ = "0.4.11"
+__version__ = "0.4.12"
 
 # Routing, language detection and email cleaning are pure Python. The torch-backed names are
 # resolved lazily so that `import laya` -- and therefore `from laya import Router` or
@@ -151,6 +151,7 @@ __all__ = [
     "Hook",
     "BaseHook",
     "AsyncHook",
+    "OptionStabilityHook",
     "decide",
     "decide_batch",
     "DecisionResult",
