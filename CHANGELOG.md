@@ -3,6 +3,46 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.15 — tracks upstream Laya 0.4.13 (upstream @6f0496f)
+
+Reviews the 49-commit upstream span 0.4.12 (@ffc1420) -> 0.4.13 (@6f0496f). Every change that
+touches a carried-adjacent file is either a behaviour-preserving performance refactor or a new
+**opt-in** language-detection diagnostic (`explain=`) that is off by default — and upstream's own
+SDK ports (`laya-rust` 0.4.13 and `laya-ts`) deliberately did **not** carry the `explain` surface.
+**No change reaches the carried Rust behaviour, so no port lands and the golden parity fixtures are
+byte-for-byte identical to 0.2.14.** This is a tracking release: it refreshes the vendored upstream
+snapshot to 0.4.13 and bumps `UPSTREAM_VERSION`, keeping the published crate aligned with the
+upstream release it mirrors.
+
+### Unported upstream changes
+
+- **A new opt-in `explain=` language-detection diagnostic** was threaded through `lang.analyse`,
+  `Router.route` / `_route` / `route_batch` and the `laya` CLI (`--explain`) (upstream `lang.py`,
+  `router.py`, `cli.py`). With `explain=False` — the default and the only path this port exercises —
+  detection and routing are byte-for-byte unchanged; the feature only adds a `diagnostic` dict
+  (selected stage, heuristic reason, and leaf index / path / line for a segment or value override)
+  when explicitly requested. Upstream's own `laya-rust` and `laya-ts` ports did not add this surface
+  in 0.4.13, and this port follows suit: `lang.rs` and `router.rs` carry only the detection and
+  routing results, which do not change.
+- **`common.answer_confidence` and `common.confidence_from_probs` replaced their scalar `np.clip`
+  with a native min/max comparison** and `confidence_from_probs` now folds the entropy sum to a
+  Python float before the scale (upstream `common.py`, "confidence: keep the entropy sum vectorised
+  after #1299"). Upstream's own note records this can move the last bits (≈1.7e-15) of the entropy
+  score, but both callers `round(..., 4)` the result, so the reported value is unchanged. This
+  port's `common.rs` already computes the vectorised entropy and clamps to `[0, 1]`, producing the
+  identical rounded confidence, so nothing changes here.
+- **`agent.py` changed `p = p / p.sum()` to the in-place `p /= p.sum()`** in its softmax
+  normalisation (upstream `agent.py`). This is an allocation-path optimisation on the torch
+  inference backend with identical values; this candle-backed port does not carry that code path.
+- **A new `OptionStabilityHook` metamorphic reliability signal** was wired into `hooks.py` /
+  `__init__.py` and mirrored into `laya-ts` (`option-stability.ts`, a `reliability` field on choice
+  answers). The hooks system is not carried by this port.
+
+Beyond those, the span is confined to the uncarried upstream `laya-rust` / `laya-dotnet` ports (a new
+`PredictLong` long-state surface and its `case_long_*` golden suites), `laya-ts` packaging, the
+`evals` / `structured` / `onnx_agent` / `integrations` modules, the SDK goldens, docs, `nix`
+packaging and CI.
+
 ## 0.2.14 — tracks upstream Laya 0.4.12 (upstream @ffc1420)
 
 Reviews the 22-commit upstream span 0.4.11 (@d74e8be) -> 0.4.12 (@ffc1420). The only change that

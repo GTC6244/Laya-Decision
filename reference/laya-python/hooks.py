@@ -655,11 +655,13 @@ def calibrate_reliability(
     escalate = highest cutoff below `accept` where answers below it are at most
                `max_escalate_accuracy` accurate.
     If no cutoff reaches `target_accuracy`, accept is returned as 1.01 (accept nothing).
+    Cutoffs use the supplied scores without rounding, matching the hook's reported
+    `soft_stability` and runtime comparison. Equal scores are evaluated together.
     """
     pairs = sorted(zip(soft_scores, correct))
     if not pairs:
         raise ValueError("cannot calibrate reliability on empty scores/correct pairs")
-    cuts = sorted({round(s, 4) for s, _ in pairs})
+    cuts = sorted({s for s, _ in pairs})
 
     accept = 1.01
     for t in cuts:
@@ -680,6 +682,14 @@ def calibrate_reliability(
 
 def _seed_of(state: Any) -> str:
     return state if isinstance(state, str) else repr(state)
+
+
+def _has_semantic_description(val: Any) -> bool:
+    if val is None or val == "":
+        return False
+    if isinstance(val, str) and not val.strip():
+        return False
+    return True
 
 
 class OptionStabilityHook(BaseHook):
@@ -822,7 +832,16 @@ class OptionStabilityHook(BaseHook):
         new_q = dict(q)
         crit = q.get("criteria")
         if isinstance(crit, dict):
-            new_q["criteria"] = {s: crit[orig] for s, orig in zip(shown, order)}
+            if relabel:
+                # If an option has no semantic description (None, empty, or whitespace),
+                # preserve the original label as the description so the model still receives
+                # the semantic text under letter renaming (#1285).
+                new_q["criteria"] = {
+                    s: (crit[orig] if _has_semantic_description(crit[orig]) else orig)
+                    for s, orig in zip(shown, order)
+                }
+            else:
+                new_q["criteria"] = {s: crit[orig] for s, orig in zip(shown, order)}
         elif isinstance(crit, (list, tuple)):
             if relabel:
                 new_q["criteria"] = {s: orig for s, orig in zip(shown, order)}
@@ -1002,7 +1021,7 @@ class OptionStabilityHook(BaseHook):
                     "probes": list(probes_ran),
                     "option_layout": layout,
                     "decision": decide_reliability(soft, self.accept, self.escalate) if soft is not None else None,
-                    "soft_stability": round(soft, 4) if soft is not None else None,
+                    "soft_stability": soft,
                     "stability": round(stability, 4) if stability is not None else None,
                     "rename_stability": round(rename_stab, 4) if rename_stab is not None else None,
                     "reorder_stability": round(reorder_stab, 4) if reorder_stab is not None else None,
