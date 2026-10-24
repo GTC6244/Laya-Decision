@@ -3,6 +3,39 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.16 — tracks upstream Laya 0.4.14 (upstream @0a05a45)
+
+Reviews the 53-commit upstream span 0.4.13 (@6f0496f) -> 0.4.14 (@0a05a45). One change reaches the
+carried Rust surface and is **ported**: upstream #1315 grew the English stopword set `_STOP["en"]`
+from 34 to 116 words, adding 82 closed-class question words, auxiliaries, pronouns and connectives
+(and the pieces the word tokenizer leaves of contractions like `doesn`/`doesnt`). Without them a
+plain request such as *"Why hasn't my card been delivered?"* matched no English function word,
+stayed undecided and took the router default (the multilingual checkpoint). This port carries the
+same 82 words into `lang.rs`, matching upstream's own `laya-rust` / `laya-ts` / `laya-dotnet` ports
+word-for-word (116 words, identical set).
+
+The addition only adds English evidence; it never removes any. On the pinned corpora upstream
+measured no `language`, `is_english` or `language_undecided` move — only `english_hits` counts rise
+for a handful of already-English rows — so the **golden parity fixtures regenerate byte-for-byte
+identical** to 0.2.15 (`lang.json`, `router.json`, `email.json` all unchanged against upstream
+0.4.14). `cargo fmt`, `clippy -D warnings` and the pure-logic + parity suite (58 unit + 3 parity
+tests) are green. Vendored `reference/` snapshots synced to upstream @0a05a45 and `UPSTREAM_VERSION`
+now reads `0.4.14`.
+
+### Unported upstream changes
+
+- **`hooks.calibrate_reliability` now accepts NumPy booleans and reals and rejects invalid
+  reliability-calibration evidence** (upstream `hooks.py`, #1314). The hooks system is not carried
+  by this port.
+- **The LangChain / CrewAI / LlamaIndex integrations and `LayaToolSelector.select` were hardened to
+  fail closed on a non-object remote decision response, a malformed `probabilities` block, or a
+  non-numeric / bool probability** (upstream `integrations/{crewai,langchain,llamaindex,tools}.py`,
+  `_guard.py`). These remote-decision integrations are not carried by this port.
+
+Beyond those, the span is confined to the uncarried upstream ports — a large new `laya-go` router /
+hooks / email / presets / calibration build-out, `laya-rust` / `laya-dotnet` / `laya-java` fixture
+regeneration — plus docs and CI re-runs.
+
 ## 0.2.15 — tracks upstream Laya 0.4.13 (upstream @6f0496f)
 
 Reviews the 49-commit upstream span 0.4.12 (@ffc1420) -> 0.4.13 (@6f0496f). Every change that
