@@ -91,6 +91,22 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
                 "the", "and", "is", "are", "was", "were", "to", "of", "in", "for", "with", "that",
                 "this", "it", "you", "have", "has", "not", "but", "on", "at", "be", "as", "from",
                 "will", "can", "would", "there", "their", "what", "which", "please", "we", "i",
+                // Question words, auxiliaries, pronouns and connectives (upstream #1315). Without
+                // them a plain request such as "Why hasn't my card been delivered?" matched no
+                // word above, stayed undecided and took the router default, the multilingual
+                // checkpoint. Each one, added alone, moved none of the 101,650 non-English MASSIVE
+                // validation rows to the English checkpoint. `doesn`, `isn` and the rest are what
+                // the word tokenizer leaves of a contraction; `doesnt` is how it is typed without
+                // the apostrophe.
+                "how", "why", "when", "where", "who", "whom", "does", "done", "doing", "been",
+                "being", "could", "should", "might", "must", "shall", "doesn", "didn", "isn",
+                "aren", "wasn", "weren", "haven", "hasn", "couldn", "wouldn", "won", "dont",
+                "wont", "didnt", "doesnt", "isnt", "wasnt", "havent", "ive", "youre", "thats",
+                "whats", "any", "some", "many", "much", "every", "each", "these", "those", "both",
+                "few", "they", "them", "she", "him", "his", "our", "your", "yours", "into", "onto",
+                "between", "after", "before", "through", "during", "without", "within", "down",
+                "if", "nor", "than", "then", "because", "while", "until", "here", "only", "very",
+                "too", "ever", "never", "always", "already", "yet",
             ]
             .into_iter()
             .collect(),
