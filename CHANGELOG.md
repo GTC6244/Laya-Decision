@@ -3,6 +3,62 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.17 — tracks upstream Laya 0.4.15 (upstream @7a77439b)
+
+Reviews the 86-commit upstream span 0.4.14 (@0a05a45) -> 0.4.15 (@7a77439b). **No change reaches
+the carried Rust behaviour, so no port lands and the golden parity fixtures are byte-for-byte
+identical to 0.2.16** (`lang.json`, `router.json`, `email.json` all regenerate unchanged against
+upstream 0.4.15). This is a tracking release: it refreshes the vendored upstream snapshot to 0.4.15,
+bumps `UPSTREAM_VERSION`, and keeps the published crate aligned with the upstream release it mirrors.
+`cargo fmt`, `clippy -D warnings` and the pure-logic + parity suite (58 unit + 3 parity tests) are
+green. Vendored `reference/` snapshots synced to upstream @7a77439b and `UPSTREAM_VERSION` now reads
+`0.4.15`.
+
+The only carried-adjacent source file upstream touched is `lang.py`, and neither change moves the
+Rust behaviour:
+
+- **`_script_counts` / `_script_of` now binary-search the flattened script ranges** (upstream
+  `lang.py`, #1328). This is a behaviour-preserving performance refactor — the same codepoint maps
+  to the same script — and upstream's own `laya-rust` port kept its linear range scan in 0.4.15, so
+  this port follows suit; `lang.rs` is unchanged and its detection results do not move.
+- **A new `_is_letter` helper counts post-Unicode-14 letters the running interpreter's Unicode
+  database may not know** (upstream `lang.py`, #1332). This fixes a CPython *version* skew: a letter
+  assigned after the interpreter's bundled database (Python 3.10 ships Unicode 13.0) was dropped
+  before script counting and the text reported `script="unknown"`. The helper only *supplies the
+  answer the newest database would have given* — "behaviour on the newest interpreter is unchanged
+  codepoint for codepoint" — and Rust's `char::is_alphabetic` already decides letters from the fixed
+  Unicode database bundled with the toolchain, not a host interpreter. Upstream's own `laya-rust`
+  port did **not** carry `_is_letter` (its only language-detection change this span was a whitespace
+  reflow of the 116-word English stopword set, which this port already matches word-for-word), and
+  this port follows suit.
+
+### Unported upstream changes
+
+- **`Agent.predict_long` now rejects an answer missing from some prediction-hook windows and skips a
+  long-scan question a hook removed from every window** (upstream `agent.py`, #1322). The `predict_long`
+  long-document scan and the hooks system it builds on are not carried by this port.
+- **`laya-serve` gained a `LAYA_BODY_READ_TIMEOUT` (408 on a stalled body), stopped serving the
+  interactive docs / OpenAPI schema when `LAYA_API_KEY` is set, and clamped a caller `batch_size` to
+  the planned chunk size so it can shrink a pass but never widen one** (upstream `serve.py`, #1330 /
+  #1331 / #1332). None reach this port's server: our axum handler reads and parses the request body
+  through the `Json` extractor **before** it takes the non-blocking admission slot (the reverse of
+  upstream's admit-then-read ordering), so a stalled upload never holds an admission slot and the
+  body-read-timeout failure mode is structurally absent; the server exposes no auto-generated docs or
+  OpenAPI route to gate; and it carries no `/v1/systemone/batch` endpoint or caller `batch_size`.
+- **The LangChain / CrewAI / LlamaIndex / Agno integrations and `_guard` were further hardened
+  against malformed nested remote-decision fields** (upstream `integrations/*`, `_guard.py`, #1337 /
+  #1340). These remote-decision integrations are not carried by this port.
+- **The evals harness, `evidence` artifact-depth guards, `onnx_agent`, and the `laya-go` / `laya-java`
+  / `laya-dotnet` / `laya-ts` SDK ports** saw the balance of the span (a large all-caps / shouted
+  language-detection and `round4` half-to-even and `analyse` field-override catch-up in `laya-ts`, a
+  shortlist-cosine `[-1, 1]` clamp in `laya-rust` / `laya-dotnet`, fixture regeneration, docs and CI
+  re-runs). The `laya-ts` and `laya-rust` behaviour changes are those ports catching up to Python
+  behaviour this port already carries — the shortlist cosine is already clamped to `[-1, 1]`
+  (`shortlist.rs`), all-caps lines already clear the `SHOUTED_MIN_WORD` / `SHOUTED_MIN_STOPWORD` bar
+  (`lang.rs`), `round4` already rounds half-to-even, and `analyse` already overrides only
+  `language` / `is_english` / `language_undecided` from the strongest non-English leaf — so they land
+  no new port here. Everything else is in the uncarried eval / training / MCP / hooks surface.
+
 ## 0.2.16 — tracks upstream Laya 0.4.14 (upstream @0a05a45)
 
 Reviews the 53-commit upstream span 0.4.13 (@6f0496f) -> 0.4.14 (@0a05a45). One change reaches the
