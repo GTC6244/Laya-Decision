@@ -3,6 +3,56 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.18 — tracks upstream Laya 0.4.16 (upstream @a478221b)
+
+Reviews the 22-commit upstream span 0.4.15 (@7a77439b) -> 0.4.16 (@a478221b). **No change reaches
+the carried Rust behaviour, so no port lands and the golden parity fixtures are byte-for-byte
+identical to 0.2.17** (`lang.json`, `router.json`, `email.json` all regenerate unchanged against
+upstream 0.4.16). This is a tracking release: it refreshes the vendored upstream snapshot to 0.4.16,
+bumps `UPSTREAM_VERSION`, and keeps the published crate aligned with the upstream release it mirrors.
+`cargo fmt`, `clippy -D warnings` and the pure-logic + parity suite (58 unit + 3 parity tests) are
+green. Vendored `reference/` snapshots synced to upstream @a478221b and `UPSTREAM_VERSION` now reads
+`0.4.16`.
+
+Not a single carried-adjacent source module moved this span: upstream touched only `cli.py`,
+`hooks.py`, `serve.py` and `structured.py` (plus the version in `__init__.py`), and `lang.py`,
+`router.py`, `email.py`, `common.py`, `presets.py`, `shortlist.py` and `agent.py` are byte-for-byte
+unchanged — which is why the goldens regenerate identically. The balance of the span is the
+`laya-rust` / `laya-dotnet` / `laya-java` SDK ports catching up to pre-existing Python behaviour, and
+CI timeout bumps.
+
+### Unported upstream changes
+
+- **`laya/cli.py` now prefixes the path to a `--questions` / batch file that is invalid JSON, not
+  UTF-8, or nested too deep, so a bad file is a usage error naming the file rather than a confusing
+  `JSONDecodeError` / `RecursionError`** (upstream #1366). This port's `laya-cli` is the thin
+  text-plus-`--preset` binary: `--preset` is validated by `clap` against a fixed list and the engine
+  loads no caller-supplied `--questions` or `--batch` JSON file, so there is no file-read path to
+  re-label.
+- **`laya/serve.py::_tournament_plan` now wraps the label-collection of a large choice so an
+  unhashable label (a `criteria` list written as JSON arrays/objects) is refused as a `422` instead
+  of falling through to a `500`** (upstream #1365). This port's `tournament_targets` never builds a
+  hash-set of labels: it reads each list label through `Value::as_str()`, so a non-string label
+  becomes `None` ("unmappable") and is already either refused with a 422 (when a choice is over the
+  option cap) or kept on the one-pass path — the `TypeError`-to-500 shape is structurally absent.
+- **`laya/structured.py::_project` / `_details` now skip a non-dict answer instead of raising
+  `AttributeError` on `.get`** (upstream #1367), and **`laya/hooks.py::validate_timeout` now refuses
+  a `float()`-unreadable `hooks_timeout` (a list/object, or a JSON integer too large for a float)
+  with the usual `ValueError` instead of leaking `TypeError` / `OverflowError`** (upstream #1363).
+  The structured-output projection and the hooks system are not carried by this port.
+- **The `laya-rust` / `laya-dotnet` SDK ports gained `predict_batch` + router batch APIs, the
+  `min_confidence` abstention gate and `jev_confidence`, and `laya-java` recorded a post-Unicode-14
+  letter floor in its `lang_tables.json`** (upstream #1358 / #1359 / #1362, #1368). These are those
+  ports catching up to Python behaviour this port already carries or deliberately omits:
+  `predict_batch` (with a `batch_size` chunk) and `jev_confidence` are already present
+  (`agent.rs`, `common.rs`), and the `min_confidence` abstention gate has no counterpart on this
+  port's single-request / batch surface (`laya-serve` carries no batch endpoint and the gate was
+  never in scope). The `_POST_DATABASE_LETTER_FLOOR` Unicode skew it addresses is a host-interpreter
+  version issue Rust does not have (`char::is_alphabetic` reads the toolchain's fixed Unicode
+  database). The remaining commits are CI timeout bumps (`ci(rust)` 240-minute parity job,
+  `ci(dotnet)` 120-minute matrix) and a `require Python 3.12 for the confidence probe` build change,
+  none of which reach this port.
+
 ## 0.2.17 — tracks upstream Laya 0.4.15 (upstream @7a77439b)
 
 Reviews the 86-commit upstream span 0.4.14 (@0a05a45) -> 0.4.15 (@7a77439b). **No change reaches
