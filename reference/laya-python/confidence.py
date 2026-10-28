@@ -64,7 +64,10 @@ def jev_confidence(answer: Dict[str, Any]) -> Optional[float]:
             p = [float(probabilities[key]) for key in sorted(probabilities, key=int)]
         else:
             p = [float(value) for value in probabilities.values()]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # `OverflowError` is the same "does not read as a number": a JSON integer literal too wide
+        # for a double (a 400-digit probability) overflows `float()`, and an infinite score level
+        # overflows `int()`. `calibrate.py:780` already names it for the same reason.
         return None
     if (any(isinstance(v, bool) for v in probabilities.values())
             or not all(math.isfinite(v) and v >= 0.0 for v in p)):

@@ -88,5 +88,10 @@
     "input": "WIE SPÄT IST ES IN KÖLN",
     "model": "multilingual",
     "reason": "Latin script, language not identified but 9% non-English letters; not safe for the English checkpoint"
+  },
+  {
+    "input": "Cảm ơn bạn nhiều",
+    "model": "multilingual",
+    "reason": "Latin script, language not identified but 25% non-English letters; not safe for the English checkpoint"
   }
 ]

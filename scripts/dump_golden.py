@@ -95,6 +95,11 @@ LANG_INPUTS = [
     # Mixed case: one English line above an all-caps acronym line now reads English overall, since
     # the acronyms no longer vote in the whole-state verdict.
     "Please refund my order\nMON DES EST LA",
+    # Vietnamese tone-marked letters now count as non-English diacritics (upstream Vietnamese
+    # diacritics fix): the precomposed tone marks (`ả`, `ạ`, `ơ`, `ề`, ...) used to count 0.0 and
+    # route to the English checkpoint; this everyday sentence now carries a 0.25 diacritic rate and
+    # leaves English. Vietnamese has no stopword list, so letters are its only signal.
+    "Cảm ơn bạn nhiều",
 ]
 
 EMAIL_INPUTS = [
@@ -150,6 +155,10 @@ ROUTER_INPUTS = [
     "MON DES EST LA",
     # A shouted line carried by its umlauts still routes multilingual.
     "WIE SPÄT IST ES IN KÖLN",
+    # Vietnamese now leaves the English checkpoint: its tone-marked letters count as non-English
+    # diacritics (upstream Vietnamese diacritics fix), so a sentence that used to route english on a
+    # 0.0 diacritic rate now routes multilingual on its 25% non-English letters.
+    "Cảm ơn bạn nhiều",
 ]
 
 
