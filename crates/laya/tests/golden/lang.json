@@ -488,5 +488,15 @@
     "diacritic_rate": 0.0,
     "non_latin_fraction": 0.0,
     "mixed_segment": null
+  },
+  {
+    "input": "Cảm ơn bạn nhiều",
+    "script": "latin",
+    "language": null,
+    "is_english": false,
+    "language_undecided": true,
+    "diacritic_rate": 0.25,
+    "non_latin_fraction": 0.0,
+    "mixed_segment": null
   }
 ]

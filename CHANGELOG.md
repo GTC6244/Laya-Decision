@@ -3,6 +3,59 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.19 — tracks upstream Laya 0.4.17 (upstream @109084f1)
+
+Reviews the 76-commit upstream span 0.4.16 (@a478221b) -> 0.4.17 (@109084f1). **One change reaches
+the carried Rust behaviour and is ported: Vietnamese tone-marked letters now count as non-English
+diacritics.** Upstream's `_NON_EN_DIACRITICS` set stopped at `đ` even though its comment already
+claimed Vietnamese coverage, so the precomposed tone marks — `ả`, `ạ`, `ơ`, `ề`, `ư` and their
+47-codepoint family — counted as plain ASCII. An everyday sentence such as `Cảm ơn bạn nhiều`
+carried a diacritic rate of `0.0`, read as English, and routed to the English checkpoint. This port
+adds the same 47 codepoints to `DIACRITICS` in `lang.rs`, so that sentence now carries a `0.25`
+diacritic rate, reports `is_english = false`, and the router sends it to the multilingual checkpoint
+(`"...but 25% non-English letters; not safe for the English checkpoint"`).
+
+The golden parity fixtures gain one Vietnamese case each in `lang.json` and `router.json`
+(regenerated from upstream 0.4.17 via `scripts/dump_golden.py`, which now carries the
+`Cảm ơn bạn nhiều` input); `email.json` and every pre-existing `lang`/`router` case regenerate
+byte-for-byte identical, confirming Vietnamese is the only carried behavioural move this span.
+`cargo fmt`, `clippy -D warnings` and the pure-logic + parity suite (58 unit + 3 parity tests) are
+green. Vendored `reference/` snapshots synced to upstream @109084f1 and `UPSTREAM_VERSION` now reads
+`0.4.17`.
+
+### Unported upstream changes
+
+- **`laya/agent.py::predict_long` now tracks each window answer's origin so end-hooks that reorder
+  results still attribute the deciding window correctly, and returns a copy that drops `window` for
+  cloned/edited/replaced answers** (upstream window-attribution fix). This port carries neither
+  `predict_long` nor the hooks system (both out of scope per `PLAN.md`), so there is no window
+  attribution or hook-reorder path to correct.
+- **`laya/shortlist.py::embed_fn_from_agent` now raises a `TypeError` naming `tok`/`model.encoder`
+  when handed an agent that is not a loaded checkpoint, instead of leaking the interpreter's own
+  `AttributeError`** (upstream guard). This port's `embed_fn_from_agent(agent: &Agent, ...)` takes a
+  typed, always-loaded `&Agent`, so the missing-attribute fault the guard catches is structurally
+  impossible — the type system already guarantees `agent.tok` and `agent.model.encoder`.
+- **`laya/cli.py` now opens `--questions` / batch files (and stdin) as `utf-8-sig` so a Notepad/Excel
+  BOM does not break a valid JSON file or prefix U+FEFF to the first request, and re-labels an
+  unreadable-but-present path (a directory, or one it may not open) as a `--questions` usage error
+  rather than a false "could not run Laya / check the network" diagnosis** (upstream BOM + OSError
+  fixes). This port's `laya-cli` is the thin text-plus-`--preset` binary and loads no caller-supplied
+  `--questions` or `--batch` JSON file, so there is no file-read path to re-encode or re-label.
+- **`laya/confidence.py::jev_confidence` now also catches `OverflowError` so a JSON probability or
+  score-level literal too wide for a double returns `None` instead of raising** (upstream). This
+  port's `jev_confidence` (`common.rs`) parses probabilities as `f64` and already rejects any
+  non-finite value via its `is_finite()` gate, so an over-wide literal — which `serde_json` surfaces
+  as infinity — is refused on the existing path; there is no separate overflow to catch.
+- **`laya/revisions.py::verify_digests` now refuses a drive-anchored component (e.g. `a/b:c`) in an
+  expected-digests manifest, closing a Windows `ntpath.join` reset that let a digest entry escape the
+  checkpoint directory** (upstream path-safety fix). This port does not carry checkpoint
+  revision/digest verification, so the manifest-path surface does not exist here.
+- The remaining span is upstream-only: `calibrate.py`, `evals.py`, `evidence.py`, `onnx_agent.py`,
+  `integrations/tools.py` and `mcp/remote.py`/`server.py` edits (none carried — training/eval, the
+  ONNX agent, the LangChain/tools glue and the MCP server are all out of scope), plus the
+  TypeScript/Java/Go/C++ SDK lang-table regenerations that follow the same Vietnamese change, and CI
+  housekeeping.
+
 ## 0.2.18 — tracks upstream Laya 0.4.16 (upstream @a478221b)
 
 Reviews the 22-commit upstream span 0.4.15 (@7a77439b) -> 0.4.16 (@a478221b). **No change reaches
