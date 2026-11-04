@@ -444,6 +444,20 @@ pub fn jev_confidence(answer: &Value) -> Option<f64> {
         return Some(1.0);
     }
     let total: f64 = p.iter().sum();
+    // Individually finite, non-negative weights can still overflow when summed — two `1e308`
+    // probabilities add to `+inf`. Dividing by that infinity zeroes every weight, so a `choice`
+    // answer would report a negative confidence and a `score` answer a false `1.0`, both outside
+    // the `[0, 1]` this function promises. Rescale by the maximum (one finite addend, so the new
+    // total is finite) before normalising; the common scale cancels in the normalisation (upstream
+    // `confidence.py::jev_confidence`).
+    let (p, total) = if total.is_finite() {
+        (p, total)
+    } else {
+        let scale = p.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let p: Vec<f64> = p.iter().map(|&v| v / scale).collect();
+        let total: f64 = p.iter().sum();
+        (p, total)
+    };
     let p: Vec<f64> = if total != 0.0 {
         p.iter().map(|&v| v / total).collect()
     } else {
@@ -874,6 +888,46 @@ mod tests {
         for answer in none_cases {
             assert_eq!(jev_confidence(&answer), None, "answer {answer:?}");
         }
+    }
+
+    #[test]
+    fn jev_confidence_rescales_when_the_total_overflows() {
+        // Individually finite, non-negative weights whose sum overflows to +inf must not zero the
+        // distribution. Without the rescale a `choice` answer reports a negative confidence and a
+        // `score` answer a false 1.0; with it the confidence equals that of the same shape written
+        // with small finite weights and stays in [0, 1] (upstream b9bda0fd `confidence.py`).
+        let cases: &[(&str, &[f64], &[f64])] = &[
+            ("overflow-uniform", &[1e308, 1e308], &[1.0, 1.0]),
+            ("overflow-skewed", &[1e308, 8e307], &[1.0, 0.8]),
+            ("overflow-with-zero", &[0.0, 1e308, 1e308], &[0.0, 1.0, 1.0]),
+            ("overflow-three", &[1e308, 5e307, 5e307], &[1.0, 0.5, 0.5]),
+        ];
+        for &(name, weights, reference) in cases {
+            // The sum must genuinely overflow, else the case proves nothing.
+            assert!(
+                weights.iter().sum::<f64>().is_infinite(),
+                "{name}: no overflow"
+            );
+            for build in [choice_answer as fn(&[f64]) -> Value, score_answer] {
+                let got = jev_confidence(&build(weights)).expect("a usable confidence");
+                let want = jev_confidence(&build(reference)).expect("a usable confidence");
+                assert!((got - want).abs() < 1e-9, "{name}: got {got}, want {want}");
+                assert!(
+                    (0.0..=1.0).contains(&got),
+                    "{name}: confidence {got} outside [0, 1]"
+                );
+            }
+        }
+
+        // A JSON integer literal too wide for i64/u64 parses as an f64 (serde_json carries no
+        // arbitrary_precision), so a huge-integer probability reaches the same overflow path.
+        let big = format!("1{}", "0".repeat(308)); // 10**308, which is 1e308 as an f64
+        let answer: Value = serde_json::from_str(&format!(
+            "{{\"type\":\"choice\",\"probabilities\":{{\"o0\":{big},\"o1\":{big}}}}}"
+        ))
+        .unwrap();
+        let got = jev_confidence(&answer).expect("a usable confidence");
+        assert!(got.abs() < 1e-9, "big-int uniform: got {got}");
     }
 
     #[test]
