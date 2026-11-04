@@ -3,6 +3,56 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.20 — tracks upstream Laya 0.4.22 (upstream @462c2644)
+
+Reviews the upstream span 0.4.17 (@109084f1) -> 0.4.22 (@462c2644), covering releases 0.4.18 through
+0.4.22. **One change reaches the carried Rust behaviour and is ported: `jev_confidence` now rescales
+a probability distribution whose weights are each finite but whose sum overflows to infinity**
+(upstream `b9bda0fd`, "normalize finite weights when their total overflows"). Every weight passes the
+existing `is_finite() && >= 0.0` gate, yet two values near the double ceiling — `1e308 + 1e308` — sum
+to `+inf`; dividing by that infinity turned every normalised weight into `0.0`, so a `choice` answer
+reported a *negative* confidence (`(0 - 1/n) / (1 - 1/n)`) and a `score` answer a false `1.0`, both
+outside the `[0, 1]` the function's signature promises. `common.rs::jev_confidence` now mirrors
+upstream: when the total is not finite it rescales the weights by their maximum (one finite addend, so
+the rescaled total is finite again) before normalising, and the common scale cancels so a well-formed
+distribution's confidence is unchanged.
+
+This is reachable in the port precisely because the overflow happens in the *sum*, not at parse:
+`1e308` is a valid finite `f64`, and a JSON integer literal too wide for `i64`/`u64` is parsed as an
+`f64` by `serde_json` (the crate carries `preserve_order` but not `arbitrary_precision`), so both a
+float and a huge-integer probability reach the addition. This is a distinct fault from the single
+over-wide literal already noted in 0.2.19 — which `is_finite()` refuses up front. The new unit test
+`jev_confidence_rescales_when_the_total_overflows` covers the uniform, skewed, with-zero, three-way
+and wide-integer overflow cases against their small-finite references, and asserts every result lands
+in `[0, 1]`.
+
+The one other carried-surface file to move this span, `laya/lang.py`, changed only for performance
+(`9580d43f`); the observable output is identical and the port already builds the same leaves with the
+same budget semantics, so the three golden fixtures (`lang.json`, `router.json`, `email.json`)
+regenerate byte-for-byte identical against upstream 0.4.22 — confirming `jev_confidence` is the only
+carried behavioural move. `cargo fmt`, `clippy -D warnings` and the pure-logic + parity suite (59 unit
++ 3 parity tests) are green. Vendored `reference/` snapshots synced to upstream @462c2644 and
+`UPSTREAM_VERSION` now reads `0.4.22`.
+
+### Unported upstream changes
+
+- **`laya/lang.py` lazy state-text traversal and string fast-path** (upstream `9580d43f`, perf). A
+  pure performance refactor — `_iter_text` becomes a generator, `state_text` short-circuits a bare
+  `str`/`bytes`/scalar, and `analyse` stops after the first newline or second leaf. The output is
+  unchanged (verified: all three goldens regenerate byte-for-byte identical), and the Rust
+  `state_text` already carries the same code-point budget semantics, so there is no behaviour to port.
+- **TypeScript batch-budget fixes** (upstream `c70bc166`, `75033a42`) and **code-point counting in
+  `latinProfile` / `stateText`** (`3401424e`, `b87976ea`) — all in the `laya-ts` SDK, which this port
+  does not carry; the two code-point commits bring TypeScript in line with behaviour Python (and this
+  port) already had.
+- The 0.4.18–0.4.21 releases folded into this span were each reviewed when they landed and reached no
+  carried, reachable behaviour: `common.py`/`calibrate.py` `OverflowError` guards on `float()`
+  (unreachable — `serde_json` without `arbitrary_precision` rejects an over-wide literal at parse),
+  `router.py` `route_batch`/`PredictContext`/`on_route` perf and the `/v1/route` diagnostics endpoint
+  (not carried), `serve.py` usage-field warnings and `min_confidence` gating (no Rust counterpart),
+  `structured.py`/`revisions.py`/`evals.py` guards (out of scope), and the balance of CI, docs, deps,
+  nix, and the `laya-ts`/`laya-dotnet`/`laya-rust`/Go/Java/C++ SDK ports.
+
 ## 0.2.19 — tracks upstream Laya 0.4.17 (upstream @109084f1)
 
 Reviews the 76-commit upstream span 0.4.16 (@a478221b) -> 0.4.17 (@109084f1). **One change reaches
