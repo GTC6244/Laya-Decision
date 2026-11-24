@@ -3,6 +3,50 @@
 All notable changes to Laya-Decision are documented here. This project ports the upstream
 [Laya](https://github.com/NandhaKishorM/laya) engine; each entry notes the upstream version tracked.
 
+## 0.2.21 — tracks upstream Laya 0.5.3 (upstream @54c72865)
+
+Reviews the upstream span 0.4.22 (@462c2644) -> 0.5.3 (@54c72865), covering releases 0.4.23 through
+0.5.3. **One change reaches the carried Rust behaviour and is ported: the Spanish, Portuguese and
+Italian `_STOP` function-word lists gain their unaccented and closed-class short-text entries**
+(upstream `9228efc5` / #1526, "add unaccented and closed-class Spanish/Portuguese stopwords for short
+text"). ASCII-normalising ticket and telephony pipelines strip accents, so short Spanish and
+Portuguese messages built only from first-person modals, possessives and unaccented function words
+(`puedo`, `hago`, `mis`, `estoy`, `despues`, `faco`, `qual`, …) matched no stopword, stayed language-
+undecided, and let English boilerplate outvote them inside a mixed state — routing the whole ticket to
+the English checkpoint. `lang.rs` now carries the same additions to the `es` (114 words), `pt` (125)
+and `it` (86, the shared elided `qual`) sets; each set is verified set-equal to the upstream
+`reference/laya-python/lang.py` `_STOP` entry. The deliberate exclusions are preserved too — `dime`,
+`favor`, `sin`, `solo` (English words) and `estamos`, `aqui`, `diga` (kept out so they do not steal
+Portuguese hits) stay absent.
+
+The new unit test `short_unaccented_spanish_and_portuguese_route_multilingual` mirrors upstream's
+`tests/test_router.py` cases: nine short unaccented Spanish/Portuguese messages now detect `es`/`pt`
+and read non-English, elided Italian `qual è …` stays Italian, and the English controls
+(`MIS` acronym, `dime`/`favor`/`solo`) stay English. The three golden fixtures (`lang.json`,
+`router.json`, `email.json`) regenerate byte-for-byte identical against upstream 0.5.3 — the new
+stopwords only affect short ASCII messages absent from the fixtures — confirming the stopword lists are
+the only carried behavioural move this span. `cargo fmt`, `clippy -D warnings` and the pure-logic +
+parity suite (60 unit + 3 parity tests) are green. Vendored `reference/` snapshots synced to upstream
+@54c72865 and `UPSTREAM_VERSION` now reads `0.5.3`.
+
+### Unported upstream changes
+
+- **"vega is the default" engine switch and the VegaML continuous-learning engine** (upstream
+  releases 0.4.23 through 0.5.3: `laya/vega.py`, `laya/learn.py`, `laya/policy.py`, `laya.Escalator` /
+  `laya.vllm_teacher` / `laya.Learner` re-exports, the `_AgentMeta.__call__` default-engine dispatch).
+  The port has no vega/learner/vegaml concept — `Agent::load` always builds the classic ModernBERT
+  checkpoint, which is exactly upstream's documented "vegaml not installed" fallback, so carried
+  behaviour is unchanged. `fix(vega): translate engine's string-keyed choice labels back to caller's
+  labels` (`216a723e`) is inside that uncarried engine.
+- **Embedding-Studio signed-policy / digest-verification loader** (`policy.py`, manifest/provenance
+  shape checks, `TRUSTED_KEYS`) — the digest/signature/revision-verification family this port
+  deliberately does not carry (PLAN.md "Out").
+- **Upstream's own other ports** — `laya-rust` ONNX (ort pin `da444d51`, optional-download), `laya-ts`
+  revision inheritance (`40d647ac`) and the TS/C++/Go/Java `_STOP` table re-recordings for #1526
+  (`60fdb8cd`, `54c72865`, `9228efc5`'s non-Python files) — not carried.
+- **ONNX export fixes** (`1d9aaae8`, `4b34c13f`), **integrations / hooks / calibrate** touches, and
+  **housekeeping** (ruff/vitest/setup-go/setup-java bumps, README, docs, nix/pyproject version bumps).
+
 ## 0.2.20 — tracks upstream Laya 0.4.22 (upstream @462c2644)
 
 Reviews the upstream span 0.4.17 (@109084f1) -> 0.4.22 (@462c2644), covering releases 0.4.18 through

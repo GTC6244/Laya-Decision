@@ -308,6 +308,96 @@ describe("lang", () => {
   });
 });
 
+// `leafNonEnglish` caps each line at 4000 characters, the same way Python's `_leaf_non_english`
+// does (#1449). Sampling the first 4000 characters of the whole leaf hid a foreign line that
+// followed a longer English prefix, and it sent that state to the English checkpoint. A single
+// line still stops at 4000: foreign text pasted onto the end of one long line is not read.
+// Expectations below are Python's `laya.lang.analyse` on the same inputs.
+describe("lang/leaf scan reads each line", () => {
+  const ENGLISH_LINE = "The customer reports that the invoice was issued twice this quarter and asks for a refund. ";
+  // 91 * 50 = 4550, past the per-line cap, so the following line is outside one whole-leaf sample.
+  const ENGLISH_PREFIX = ENGLISH_LINE.repeat(50);
+  const GERMAN = "Ich wurde doppelt belastet und möchte eine Rückerstattung";
+  const GERMAN_ASCII = "Ich wurde doppelt belastet und moechte eine Rueckerstattung";
+
+  it("finds a German line after an English prefix longer than 4000 characters", () => {
+    const got = analyse({ note: `${ENGLISH_PREFIX}\n${GERMAN}` });
+    expect(got.isEnglish).toBe(false);
+    expect(got.language).toBe("de");
+    expect(got.languageUndecided).toBe(false);
+    expect(got.mixedSegment).toBeNull();
+  });
+
+  it("finds ASCII German after the same prefix", () => {
+    const got = analyse({ note: `${ENGLISH_PREFIX}\n${GERMAN_ASCII}` });
+    expect(got.isEnglish).toBe(false);
+    expect(got.language).toBe("de");
+    expect(got.mixedSegment).toBeNull();
+  });
+
+  it("still names German when that line comes before the English prefix", () => {
+    const got = analyse({ note: `${GERMAN}\n${ENGLISH_PREFIX}` });
+    expect(got.isEnglish).toBe(false);
+    expect(got.language).toBe("de");
+    expect(got.mixedSegment).toBe(GERMAN);
+  });
+
+  it("does not read past 4000 characters of one line", () => {
+    // No newline, so the German tail sits past the cap and the line is English.
+    const sameLine = analyse({ note: ENGLISH_PREFIX + GERMAN });
+    expect([...ENGLISH_PREFIX].length).toBeGreaterThan(4000);
+    expect(sameLine.isEnglish).toBe(true);
+    expect(sameLine.language).toBe("en");
+    expect(sameLine.mixedSegment).toBeNull();
+
+    // The line is longer than the cap, and its first 4000 characters are still German.
+    // An English sibling fills the segment budget, so only the per-line leaf read can see it.
+    const longGerman = `${GERMAN}. `.repeat(80);
+    expect([...longGerman].length).toBeGreaterThan(4000);
+    const ownLine = analyse({ note: "Please refund this. ".repeat(200), body: longGerman });
+    expect(ownLine.isEnglish).toBe(false);
+    expect(ownLine.language).toBe("de");
+    expect(ownLine.mixedSegment).toBeNull();
+  });
+
+  it("skips empty lines and still reads the foreign line after them", () => {
+    const afterBlanks = analyse({ note: `${ENGLISH_PREFIX}\n\n\n${GERMAN}` });
+    expect(afterBlanks.isEnglish).toBe(false);
+    expect(afterBlanks.language).toBe("de");
+
+    const afterWhitespace = analyse({ note: `${ENGLISH_PREFIX}\n   \n\t\n${GERMAN}` });
+    expect(afterWhitespace.isEnglish).toBe(false);
+    expect(afterWhitespace.language).toBe("de");
+
+    const onlyEmpty = analyse({
+      note: "Please refund the duplicate charge on invoice 4411 today.",
+      extra: "\n\n\n",
+    });
+    expect(onlyEmpty.isEnglish).toBe(true);
+    expect(onlyEmpty.language).toBe("en");
+
+    const onlySpaces = analyse({
+      note: "Please refund the duplicate charge on invoice 4411 today.",
+      extra: " ".repeat(5000),
+    });
+    expect(onlySpaces.isEnglish).toBe(true);
+    expect(onlySpaces.language).toBe("en");
+  });
+
+  it("keeps the most letter-rich qualifying line of one leaf", () => {
+    // Python's inner scan does not return on the first hit. "status" is six characters and
+    // is skipped; the short German line qualifies; the repeated Portuguese line has more letters.
+    const portuguese = "Quero o meu dinheiro de volta agora mesmo porque já esperei demais";
+    const got = analyse({
+      note: "The customer was billed twice and wants a refund. ".repeat(140),
+      long: `status\nMein Konto wurde zweimal belastet\n${portuguese.repeat(3)}`,
+    });
+    expect(got.isEnglish).toBe(false);
+    expect(got.language).toBe("pt");
+    expect(got.mixedSegment).toBeNull();
+  });
+});
+
 // All-caps handling, ported from `laya/lang.py:605-660, 750-800` (#1315's follow-up). An acronym
 // block is not a foreign language, so it must not vote in the whole-state verdict nor name a
 // foreign segment on its own line; a customer shouting in Portuguese is still Portuguese.
@@ -353,5 +443,35 @@ describe("lang/all-caps routing", () => {
     // Blanking every all-caps run deleted emphasis capitals and lost verdicts (`sag mir das
     // HEUTIGE DATUM` routed english). Only runs short enough to be acronyms are blanked.
     expect(analyse("quero cancelar o pedido MON DES EST LA por favor").language).toBe("pt");
+  });
+});
+
+describe("lang/short unaccented Spanish & Portuguese", () => {
+  it.each<[string, string]>([
+    ["es", "no puedo entrar a mi cuenta"],
+    ["es", "como hago para pedir un reembolso?"],
+    ["es", "como actualizo mis datos?"],
+    ["es", "estoy esperando desde ayer una respuesta"],
+    ["pt", "como faco para reembolsar?"],
+    ["pt", "qual o prazo de entrega amanha?"],
+    ["pt", "eles ainda nao fizeram o estorno"],
+  ])("names %s and keeps mixed English-template tickets off English: %s", (lang, text) => {
+    expect(guessLatinLanguage(text)).toBe(lang);
+    expect(isEnglish(text)).toBe(false);
+    const mixed = { header: "Customer support ticket received from web form", body: text };
+    expect(new Router().route(mixed, {}).model).toBe("multilingual");
+  });
+
+  it("keeps Italian elided qual as Italian", () => {
+    expect(guessLatinLanguage("qual è l'ultima notizia da rete quattro")).toBe("it");
+  });
+
+  it.each([
+    "Please send me the MIS report before tomorrow morning",
+    "I ate lunch and did not spend a dime on the trip",
+    "Do me a favor and check the solo plan settings",
+  ])("keeps English controls English: %s", (text) => {
+    expect(isEnglish(text)).toBe(true);
+    expect(new Router().route(text, {}).model).toBe("english");
   });
 });

@@ -150,7 +150,12 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
                 "fue", "fueron", "ser", "tiene", "tienen", "tengo", "puede", "pueden", "quiero",
                 "necesito", "hemos", "han", "sobre", "entre", "cuando", "donde", "porque",
                 "aunque", "también", "ya", "eso", "esto", "esa", "ese", "nada", "algo", "aquí",
-                "hoy", "gracias",
+                "hoy", "gracias", "puedo", "puedes", "pueda", "estoy", "estan", "están", "mis",
+                "tus", "nuestro", "nuestra", "hago", "hace", "hacer", "despues", "después",
+                "todavia", "todavía", "tambien", "ahora", "ayer", "siempre", "hasta", "desde",
+                "alguien", "nadie", "ninguna", "entonces", "nosotros", "ustedes", "usted", "quien",
+                "quién", "quienes", "cual", "cuál", "cuales", "cuáles", "cuándo", "dónde", "cómo",
+                "hola", "buenas", "tardes", "quisiera", "pues", "luego", "otra", "tienes", "sabes",
             ]
             .into_iter()
             .collect(),
@@ -168,7 +173,9 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
                 "tá", "pra", "gostaria", "obrigada", "também", "tambem", "estou", "estamos",
                 "meus", "minhas", "nosso", "nossa", "consigo", "cadê", "boa", "tarde", "noite",
                 "depois", "antes", "então", "entao", "ninguém", "ninguem", "alguém", "alguem",
-                "nenhum", "nenhuma", "estava", "ficou", "fiz", "deu",
+                "nenhum", "nenhuma", "estava", "ficou", "fiz", "deu", "faço", "faco", "fazer",
+                "faz", "eles", "elas", "nós", "estao", "estão", "qual", "quais", "quem", "outra",
+                "outros", "outras", "precisa", "amanha", "amanhã",
             ]
             .into_iter()
             .collect(),
@@ -182,9 +189,9 @@ fn stop() -> &'static IndexMap<&'static str, HashSet<&'static str>> {
                 "ne", "ho", "hai", "ha", "abbiamo", "avete", "hanno", "era", "stato", "stata",
                 "devo", "deve", "devono", "voglio", "vorrei", "mio", "mia", "tuo", "sua", "quando",
                 "dove", "perche", "molto", "poco", "sempre", "mai", "già", "ancora", "adesso",
-                "oggi", "ieri", "grazie", "ciao", "scusa", "nel", "nell", "negli", "sul", "sulla",
-                "sulle", "dal", "dalla", "dallo", "dagli", "dei", "delle", "dello", "degli",
-                "agli", "alle", "col",
+                "oggi", "ieri", "grazie", "ciao", "scusa", "qual", "nel", "nell", "negli", "sul",
+                "sulla", "sulle", "dal", "dalla", "dallo", "dagli", "dei", "delle", "dello",
+                "degli", "agli", "alle", "col",
             ]
             .into_iter()
             .collect(),
@@ -1481,6 +1488,45 @@ mod tests {
                 .as_deref(),
             Some("es")
         );
+    }
+
+    #[test]
+    fn short_unaccented_spanish_and_portuguese_route_multilingual() {
+        // ASCII-normalising pipelines strip accents; without first-person modals, possessives and
+        // unaccented function words (`puedo`, `hago`, `mis`, `estoy`, `despues`, `faco`, `qual`),
+        // these short messages stayed undecided and routed english (upstream #1526).
+        for (lang, text) in [
+            ("es", "no puedo entrar a mi cuenta"),
+            ("es", "como hago para pedir un reembolso?"),
+            ("es", "como actualizo mis datos?"),
+            ("es", "estoy esperando desde ayer una respuesta"),
+            ("es", "con alguien por favor con quien sea"),
+            ("es", "vaya pues gracias hasta luego"),
+            ("pt", "como faco para reembolsar?"),
+            ("pt", "qual o prazo de entrega amanha?"),
+            ("pt", "eles ainda nao fizeram o estorno"),
+        ] {
+            assert_eq!(
+                guess_latin_language(text).as_deref(),
+                Some(lang),
+                "guess_latin_language({text:?})"
+            );
+            assert!(!is_english(&s(text)), "is_english({text:?})");
+        }
+        // Italian elided `qual` must stay Italian, not flip to Portuguese.
+        assert_eq!(
+            guess_latin_language("qual è l'ultima notizia da rete quattro").as_deref(),
+            Some("it")
+        );
+        // English controls must stay English: `MIS` is an acronym, `dime`/`favor`/`solo` are the
+        // English words the stopword lists deliberately leave out.
+        for text in [
+            "Please send me the MIS report before tomorrow morning",
+            "I ate lunch and did not spend a dime on the trip",
+            "Do me a favor and check the solo plan settings",
+        ] {
+            assert!(is_english(&s(text)), "is_english({text:?})");
+        }
     }
 
     #[test]
